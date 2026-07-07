@@ -3,6 +3,10 @@
   functions = "netlify/functions"
   publish = "public"
 
+[build.environment]
+  # Install devDependencies (typescript, @types/*) needed for `tsc` build.
+  NPM_CONFIG_PRODUCTION = "false"
+
 [functions]
   directory = "netlify/functions"
   external_node_modules = ["express"]
