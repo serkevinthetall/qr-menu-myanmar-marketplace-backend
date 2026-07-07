@@ -168,6 +168,7 @@ router.post('/', async (req: AuthRequest, res) => {
   const phoneRaw = toStringValue(req.body?.phone).trim();
   const street = toStringValue(req.body?.street).trim();
   const street2 = toStringValue(req.body?.street2).trim();
+  const tagIdsRaw = req.body?.tagIds;
   const tagsRaw = toStringValue(req.body?.tags).trim();
   const townshipId = Number(req.body?.townshipId);
 
@@ -211,6 +212,12 @@ router.post('/', async (req: AuthRequest, res) => {
       });
     }
 
+    const tagIds = Array.isArray(tagIdsRaw)
+      ? tagIdsRaw
+          .map(id => Number(id))
+          .filter(id => Number.isFinite(id) && id > 0)
+      : [];
+
     const created = await createOdooContact(req.user!.id, {
       name,
       email: email || undefined,
@@ -218,7 +225,8 @@ router.post('/', async (req: AuthRequest, res) => {
       street: street || undefined,
       street2: street2 || undefined,
       townshipId,
-      tagNames: splitTagNames(tagsRaw),
+      tagIds: tagIds.length > 0 ? tagIds : undefined,
+      tagNames: tagIds.length > 0 ? undefined : splitTagNames(tagsRaw),
     });
 
     const contacts = await fetchOdooContacts(req.user!.id);

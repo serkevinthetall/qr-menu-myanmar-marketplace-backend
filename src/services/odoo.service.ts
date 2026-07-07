@@ -793,6 +793,7 @@ export type CreateContactInput = {
   street?: string;
   street2?: string;
   townshipId?: number;
+  tagIds?: number[];
   tagNames?: string[];
 };
 
@@ -804,31 +805,43 @@ export async function fetchOdooPartnerTags(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  try {
-    return await searchReadOdooRecords<{ id: number; name: string }>(
-      session,
-      'res.partner.category',
-      [],
-      ['id', 'name'],
-      { order: 'name asc', limit: 1000 },
-    );
-  } catch {
-    return [];
-  }
+  return searchReadOdooRecords<{ id: number; name: string }>(
+    session,
+    'res.partner.category',
+    [],
+    ['id', 'name'],
+    { order: 'name asc', limit: 1000 },
+  );
 }
 
-export async function getOrCreateOdooPartnerTagIds(
+export async function resolveOdooPartnerTagIds(
   userId: string,
-  tagNames: string[],
+  options: { tagIds?: number[]; tagNames?: string[] },
 ): Promise<number[]> {
   const session = getOdooSession(userId);
-  if (!session || tagNames.length === 0) {
-    return [];
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
   }
 
-  const tagIds: number[] = [];
+  const ids = new Set<number>();
 
-  for (const tagName of tagNames) {
+  for (const tagId of options.tagIds ?? []) {
+    if (Number.isFinite(tagId) && tagId > 0) {
+      ids.add(tagId);
+    }
+  }
+
+  if (ids.size > 0) {
+    const rows = await readOdooRecords<{ id: number }>(
+      session,
+      'res.partner.category',
+      [...ids],
+      ['id'],
+    );
+    return rows.map(row => row.id).filter(id => id > 0);
+  }
+
+  for (const tagName of options.tagNames ?? []) {
     const trimmed = tagName.trim();
     if (!trimmed) {
       continue;
@@ -843,17 +856,11 @@ export async function getOrCreateOdooPartnerTagIds(
     );
 
     if (existing[0]?.id) {
-      tagIds.push(existing[0].id);
-      continue;
+      ids.add(existing[0].id);
     }
-
-    const newTagId = await createOdooRecord(session, 'res.partner.category', {
-      name: trimmed,
-    });
-    tagIds.push(newTagId);
   }
 
-  return tagIds;
+  return [...ids];
 }
 
 export type OdooContactSearchResult = {
@@ -972,9 +979,10 @@ export async function createOdooContact(
     values[PARTNER_TOWNSHIP_FIELD] = input.townshipId;
   }
 
-  const tagIds = input.tagNames?.length
-    ? await getOrCreateOdooPartnerTagIds(userId, input.tagNames)
-    : [];
+  const tagIds = await resolveOdooPartnerTagIds(userId, {
+    tagIds: input.tagIds,
+    tagNames: input.tagIds?.length ? undefined : input.tagNames,
+  });
 
   if (tagIds.length > 0) {
     values.category_id = [[6, 0, tagIds]];
