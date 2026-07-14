@@ -267,6 +267,81 @@ async function odooExecuteKw(uid, model, method, args = [], kwargs = {}) {
     }
     return data.result;
 }
+async function readOdooRecordAsUser(session, model, recordId, fields) {
+    const rows = await odooCallKw(session.cookie, model, 'read', [
+        [recordId],
+        fields,
+    ]);
+    return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+async function createOdooRecordAsUser(session, model, values) {
+    return odooCallKw(session.cookie, model, 'create', [values]);
+}
+async function writeOdooRecordAsUser(session, model, recordId, values) {
+    await odooCallKw(session.cookie, model, 'write', [[recordId], values]);
+}
+/**
+ * Resolve the live Studio field name for Sale Person Name.
+ * Prefer the known technical name; fall back to ir.model.fields lookup.
+ */
+async function resolveSalePersonFieldName(session) {
+    const known = 'x_studio_sale_person_name';
+    try {
+        const fields = await odooCallKw(session.cookie, 'sale.order', 'fields_get', [
+            [known],
+            ['type', 'string', 'store', 'readonly'],
+        ]);
+        const meta = fields?.[known];
+        if (meta) {
+            if (meta.readonly) {
+                throw new Error(`Sale Person Name field "${known}" is read-only in Odoo. Uncheck Readonly in Studio.`);
+            }
+            if (meta.store === false) {
+                throw new Error(`Sale Person Name field "${known}" is not stored. In Studio, enable Stored so API can save it.`);
+            }
+            return known;
+        }
+    }
+    catch (error) {
+        if (error instanceof Error && error.message.includes('Sale Person Name field')) {
+            throw error;
+        }
+        // fields_get may fail for missing fields; try ir.model.fields next.
+    }
+    try {
+        const rows = await odooCallKw(session.cookie, 'ir.model.fields', 'search_read', [
+            [
+                ['model', '=', 'sale.order'],
+                '|',
+                ['name', '=', known],
+                '&',
+                ['name', 'ilike', 'sale_person'],
+                ['ttype', '=', 'char'],
+            ],
+            ['name', 'field_description', 'store'],
+        ], { limit: 10 });
+        const exact = rows?.find(row => row.name === known);
+        if (exact) {
+            if (exact.store === false) {
+                throw new Error(`Sale Person Name field "${known}" is not stored. In Studio, enable Stored so API can save it.`);
+            }
+            return exact.name;
+        }
+        const byLabel = rows?.find(row => String(row.field_description || '')
+            .toLowerCase()
+            .includes('sale person'));
+        if (byLabel) {
+            return byLabel.name;
+        }
+    }
+    catch (error) {
+        if (error instanceof Error && error.message.includes('Sale Person Name field')) {
+            throw error;
+        }
+        // Fall through to the known Studio name.
+    }
+    return known;
+}
 async function readOdooRecord(session, model, recordId, fields) {
     if (env.odooApiKey) {
         try {
@@ -297,8 +372,8 @@ async function createOdooRecord(session, model, values) {
 async function writeOdooRecord(session, model, recordId, values) {
     await odooCallKw(session.cookie, model, 'write', [[recordId], values]);
 }
-export async function createOdooQuotation(userId, input) {
-    const session = getOdooSession(userId);
+export async function createOdooQuotation(userId, input, sessionOverride) {
+    const session = sessionOverride ?? getOdooSession(userId);
     if (!session) {
         throw new Error('Odoo session expired. Please log in again.');
     }
@@ -334,8 +409,6 @@ export async function createOdooQuotation(userId, input) {
         input.paymentMethodLineId > 0) {
         values.preferred_payment_method_line_id = input.paymentMethodLineId;
     }
-    // Studio fields are written after create via the login session. API-key create
-    // often persists the order but silently drops x_studio_* fields.
     const studioValues = {};
     const deliveryNotes = input.deliveryNotes?.trim();
     if (deliveryNotes) {
@@ -350,21 +423,69 @@ export async function createOdooQuotation(userId, input) {
         studioValues.x_studio_phonenumber = phoneNumber;
     }
     const salePersonName = input.salePersonName?.trim();
-    if (salePersonName) {
-        studioValues.x_studio_sale_person_name = salePersonName;
+    const salePersonField = salePersonName
+        ? await resolveSalePersonFieldName(session)
+        : '';
+    if (salePersonName && salePersonField) {
+        studioValues[salePersonField] = salePersonName;
     }
-    const quotationId = await createOdooRecord(session, 'sale.order', values);
+    // Always create via the login session when Studio fields are present so they
+    // are not dropped by the API-key path.
+    let quotationId;
     if (Object.keys(studioValues).length > 0) {
-        await writeOdooRecord(session, 'sale.order', quotationId, studioValues);
-    }
-    if (salePersonName) {
-        const verify = await readOdooRecord(session, 'sale.order', quotationId, ['x_studio_sale_person_name']);
-        const saved = String(verify?.x_studio_sale_person_name || '').trim();
-        if (saved !== salePersonName) {
-            throw new Error(`Sale Person Name was not saved to Odoo (expected "${salePersonName}", got "${saved || '(empty)'}"). Check field access on x_studio_sale_person_name.`);
+        try {
+            quotationId = await createOdooRecordAsUser(session, 'sale.order', {
+                ...values,
+                ...studioValues,
+            });
+        }
+        catch {
+            quotationId = await createOdooRecordAsUser(session, 'sale.order', values);
+            for (const [field, value] of Object.entries(studioValues)) {
+                try {
+                    await writeOdooRecordAsUser(session, 'sale.order', quotationId, {
+                        [field]: value,
+                    });
+                }
+                catch (error) {
+                    if (field === salePersonField) {
+                        throw error instanceof Error
+                            ? error
+                            : new Error(`Failed to write Sale Person Name (${field}).`);
+                    }
+                    console.error(`[quotations] Failed to write studio field ${field}:`, error instanceof Error ? error.message : error);
+                }
+            }
         }
     }
-    const created = await readOdooRecord(session, 'sale.order', quotationId, ['id', 'name']);
+    else {
+        quotationId = await createOdooRecord(session, 'sale.order', values);
+    }
+    // Force-write Sale Person Name after create (covers cases where create
+    // accepted the vals but did not persist the Studio column).
+    if (salePersonName && salePersonField) {
+        await writeOdooRecordAsUser(session, 'sale.order', quotationId, {
+            [salePersonField]: salePersonName,
+        });
+        // Also try API-key write when available (same uid).
+        if (env.odooApiKey) {
+            try {
+                await odooExecuteKw(session.uid, 'sale.order', 'write', [
+                    [quotationId],
+                    { [salePersonField]: salePersonName },
+                ]);
+            }
+            catch {
+                // Cookie write is authoritative; API-key write is best-effort.
+            }
+        }
+        const verify = await readOdooRecordAsUser(session, 'sale.order', quotationId, [salePersonField]);
+        const saved = String(verify?.[salePersonField] || '').trim();
+        if (saved !== salePersonName) {
+            throw new Error(`Sale Person Name was not saved to Odoo field "${salePersonField}" (expected "${salePersonName}", got "${saved || '(empty)'}"). Ask an Odoo admin to confirm the field is stored (not related) and writable for your user.`);
+        }
+    }
+    const created = await readOdooRecordAsUser(session, 'sale.order', quotationId, ['id', 'name']);
     return {
         id: quotationId,
         name: created?.name ?? String(quotationId),

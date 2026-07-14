@@ -188,16 +188,20 @@ router.post('/', async (req: AuthRequest, res) => {
   });
 
   try {
-    const created = await createOdooQuotation(req.user!.id, {
-      partnerId,
-      shippingPartnerId,
-      salePersonName,
-      deliveryNotes: deliveryNote,
-      preferredDeliveryDate,
-      phoneNumber: toStringValue(body.phoneNumber),
-      paymentMethodLineId,
-      lines: parsedLines,
-    });
+    const created = await createOdooQuotation(
+      req.user!.id,
+      {
+        partnerId,
+        shippingPartnerId,
+        salePersonName,
+        deliveryNotes: deliveryNote,
+        preferredDeliveryDate,
+        phoneNumber: toStringValue(body.phoneNumber),
+        paymentMethodLineId,
+        lines: parsedLines,
+      },
+      req.odooSession,
+    );
 
     const quotation = await fetchOdooQuotationById(req.user!.id, created.id);
     if (!quotation) {

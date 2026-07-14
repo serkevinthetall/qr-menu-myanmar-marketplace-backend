@@ -136,7 +136,7 @@ router.post('/', async (req, res) => {
             phoneNumber: toStringValue(body.phoneNumber),
             paymentMethodLineId,
             lines: parsedLines,
-        });
+        }, req.odooSession);
         const quotation = await fetchOdooQuotationById(req.user.id, created.id);
         if (!quotation) {
             return res.status(201).json({
