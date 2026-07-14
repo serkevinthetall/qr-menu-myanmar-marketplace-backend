@@ -35,7 +35,7 @@ export type OdooProduct = {
   qty_available: number;
   active: boolean;
   categ_id: [number, string] | false;
-  image_128: string | false;
+  image_128?: string | false;
   uom_id: [number, string] | false;
 };
 
@@ -274,12 +274,13 @@ export async function fetchOdooProducts(userId: string): Promise<OdooProduct[]> 
             'qty_available',
             'active',
             'categ_id',
-            'image_128',
             'uom_id',
           ],
         ],
         kwargs: {
           order: 'name asc',
+          // Skip image_128 — base64 thumbnails inflate the payload by ~1–2MB
+          // and make New Quotation open slowly. ProductThumb shows a placeholder.
           limit: 500,
         },
       },

@@ -18,6 +18,10 @@ export function createApp() {
     app.use(serverlessJsonBody);
     app.use(jsonBodyParser);
     app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'));
+    // Root → health so visiting the Vercel domain shows API status.
+    app.get('/', (_req, res) => {
+        res.redirect(302, '/api/health');
+    });
     app.use('/api', routes);
     app.use(errorHandler);
     return app;
