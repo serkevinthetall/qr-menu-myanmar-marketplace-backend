@@ -35,3 +35,7 @@ export function createApp() {
 
   return app;
 }
+
+/** Default export required by Vercel Express framework (`src/app.ts`). */
+const app = createApp();
+export default app;

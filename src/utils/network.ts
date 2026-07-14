@@ -2,21 +2,25 @@ import os from 'os';
 
 /** Prefer Wi‑Fi (en0), then fall back to any non-internal IPv4 address. */
 export function getLanIPv4(): string | null {
-  const interfaces = os.networkInterfaces();
-  const preferred = ['en0', 'en1', 'wlan0', 'eth0'];
+  try {
+    const interfaces = os.networkInterfaces();
+    const preferred = ['en0', 'en1', 'wlan0', 'eth0'];
 
-  for (const name of preferred) {
-    const match = pickIPv4(interfaces[name]);
-    if (match) {
-      return match;
+    for (const name of preferred) {
+      const match = pickIPv4(interfaces[name]);
+      if (match) {
+        return match;
+      }
     }
-  }
 
-  for (const entries of Object.values(interfaces)) {
-    const match = pickIPv4(entries);
-    if (match) {
-      return match;
+    for (const entries of Object.values(interfaces)) {
+      const match = pickIPv4(entries);
+      if (match) {
+        return match;
+      }
     }
+  } catch {
+    // Serverless (Vercel/Netlify) may restrict networkInterfaces().
   }
 
   return null;

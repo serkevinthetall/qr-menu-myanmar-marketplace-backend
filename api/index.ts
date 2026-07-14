@@ -1,7 +1,2 @@
-import { createApp } from '../src/app.js';
-
-/**
- * Vercel serverless entry — Express app is exported directly.
- * Routes stay under /api/* (see createApp + vercel.json rewrites).
- */
-export default createApp();
+/** Re-export Express app for any /api serverless fallback. */
+export { default } from '../src/app.js';
