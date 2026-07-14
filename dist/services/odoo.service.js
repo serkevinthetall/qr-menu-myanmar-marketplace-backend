@@ -129,11 +129,17 @@ export async function destroyOdooSession(userId, sessionOverride) {
     }
     deleteOdooSession(userId);
 }
-export async function fetchOdooProducts(userId) {
+export async function fetchOdooProducts(userId, options) {
     const session = getOdooSession(userId);
     if (!session) {
         throw new Error('Odoo session expired. Please log in again.');
     }
+    const limit = options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+        ? Math.min(Math.floor(options.limit), 500)
+        : 500;
+    const offset = options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+        ? Math.floor(options.offset)
+        : 0;
     const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
         method: 'POST',
         headers: {
@@ -147,7 +153,7 @@ export async function fetchOdooProducts(userId) {
                 model: 'product.product',
                 method: 'search_read',
                 args: [
-                    [],
+                    [['active', '=', true]],
                     [
                         'id',
                         'name',
@@ -161,7 +167,8 @@ export async function fetchOdooProducts(userId) {
                 kwargs: {
                     order: 'name asc',
                     // Avoid image_128 (huge payload) and qty_available (slow computed field).
-                    limit: 500,
+                    limit,
+                    offset,
                 },
             },
             id: Date.now(),
@@ -950,15 +957,22 @@ export async function fetchOdooContacts(userId) {
     return data.result ?? [];
 }
 /** Lean contact list for New Quotation — fewer fields, customers only. */
-export async function fetchOdooContactsForQuotation(userId) {
+export async function fetchOdooContactsForQuotation(userId, options) {
     const session = getOdooSession(userId);
     if (!session) {
         throw new Error('Odoo session expired. Please log in again.');
     }
     const fields = [...CONTACT_BASE_FIELDS, PARTNER_TOWNSHIP_FIELD];
+    const limit = options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+        ? Math.min(Math.floor(options.limit), 500)
+        : 500;
+    const offset = options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+        ? Math.floor(options.offset)
+        : 0;
     return searchReadOdooRecords(session, 'res.partner', [['customer_rank', '>', 0]], fields, {
         order: 'name asc',
-        limit: 500,
+        limit,
+        offset,
     });
 }
 export async function fetchOdooContactById(userId, contactId) {

@@ -37,8 +37,12 @@ router.use(authMiddleware);
 router.get('/', async (req, res) => {
     try {
         const lite = String(req.query.lite ?? '') === '1';
+        const limitRaw = Number(req.query.limit);
+        const offsetRaw = Number(req.query.offset);
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
+        const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
         const contacts = lite
-            ? await fetchOdooContactsForQuotation(req.user.id)
+            ? await fetchOdooContactsForQuotation(req.user.id, { limit, offset })
             : await fetchOdooContacts(req.user.id);
         const data = contacts.map(contact => {
             const extra = {};
@@ -67,6 +71,18 @@ router.get('/', async (req, res) => {
                 extra,
             };
         });
+        if (lite) {
+            const effectiveLimit = limit ?? 500;
+            return res.json({
+                data,
+                meta: {
+                    limit: effectiveLimit,
+                    offset,
+                    count: data.length,
+                    hasMore: data.length >= effectiveLimit,
+                },
+            });
+        }
         return res.json({ data });
     }
     catch (error) {

@@ -10,7 +10,12 @@ router.use(authMiddleware);
 
 router.get('/', async (req: AuthRequest, res) => {
   try {
-    const products = await fetchOdooProducts(req.user!.id);
+    const limitRaw = Number(req.query.limit);
+    const offsetRaw = Number(req.query.offset);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
+    const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+
+    const products = await fetchOdooProducts(req.user!.id, { limit, offset });
 
     const data = products.map(product => ({
       id: String(product.id),
@@ -25,7 +30,16 @@ router.get('/', async (req: AuthRequest, res) => {
       unit: Array.isArray(product.uom_id) ? product.uom_id[1] : 'Units',
     }));
 
-    return res.json({ data });
+    const effectiveLimit = limit ?? 500;
+    return res.json({
+      data,
+      meta: {
+        limit: effectiveLimit,
+        offset,
+        count: data.length,
+        hasMore: data.length >= effectiveLimit,
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load products.';

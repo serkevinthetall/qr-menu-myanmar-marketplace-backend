@@ -245,12 +245,24 @@ export async function destroyOdooSession(
   deleteOdooSession(userId);
 }
 
-export async function fetchOdooProducts(userId: string): Promise<OdooProduct[]> {
+export async function fetchOdooProducts(
+  userId: string,
+  options?: { limit?: number; offset?: number },
+): Promise<OdooProduct[]> {
   const session = getOdooSession(userId);
 
   if (!session) {
     throw new Error('Odoo session expired. Please log in again.');
   }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 500;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
 
   const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
     method: 'POST',
@@ -265,7 +277,7 @@ export async function fetchOdooProducts(userId: string): Promise<OdooProduct[]> 
         model: 'product.product',
         method: 'search_read',
         args: [
-          [],
+          [['active', '=', true]],
           [
             'id',
             'name',
@@ -279,7 +291,8 @@ export async function fetchOdooProducts(userId: string): Promise<OdooProduct[]> 
         kwargs: {
           order: 'name asc',
           // Avoid image_128 (huge payload) and qty_available (slow computed field).
-          limit: 500,
+          limit,
+          offset,
         },
       },
       id: Date.now(),
@@ -1605,6 +1618,7 @@ export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> 
 /** Lean contact list for New Quotation — fewer fields, customers only. */
 export async function fetchOdooContactsForQuotation(
   userId: string,
+  options?: { limit?: number; offset?: number },
 ): Promise<OdooContact[]> {
   const session = getOdooSession(userId);
 
@@ -1613,6 +1627,14 @@ export async function fetchOdooContactsForQuotation(
   }
 
   const fields = [...CONTACT_BASE_FIELDS, PARTNER_TOWNSHIP_FIELD];
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 500;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
 
   return searchReadOdooRecords<OdooContact>(
     session,
@@ -1621,7 +1643,8 @@ export async function fetchOdooContactsForQuotation(
     fields,
     {
       order: 'name asc',
-      limit: 500,
+      limit,
+      offset,
     },
   );
 }
