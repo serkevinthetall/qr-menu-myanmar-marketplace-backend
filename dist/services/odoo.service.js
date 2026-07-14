@@ -153,15 +153,14 @@ export async function fetchOdooProducts(userId) {
                         'name',
                         'default_code',
                         'list_price',
-                        'qty_available',
                         'active',
                         'categ_id',
-                        'image_128',
                         'uom_id',
                     ],
                 ],
                 kwargs: {
                     order: 'name asc',
+                    // Avoid image_128 (huge payload) and qty_available (slow computed field).
                     limit: 500,
                 },
             },
@@ -294,6 +293,10 @@ async function createOdooRecord(session, model, values) {
     }
     return odooCallKw(session.cookie, model, 'create', [values]);
 }
+/** Prefer the login cookie so Studio fields respect the user’s field access. */
+async function writeOdooRecord(session, model, recordId, values) {
+    await odooCallKw(session.cookie, model, 'write', [[recordId], values]);
+}
 export async function createOdooQuotation(userId, input) {
     const session = getOdooSession(userId);
     if (!session) {
@@ -326,28 +329,41 @@ export async function createOdooQuotation(userId, input) {
         partner_shipping_id: shippingPartnerId,
         order_line: orderLineCommands,
     };
-    const deliveryNotes = input.deliveryNotes?.trim();
-    if (deliveryNotes) {
-        values.x_studio_delivery_notes = deliveryNotes;
-    }
-    const preferredDeliveryDate = input.preferredDeliveryDate?.trim();
-    if (preferredDeliveryDate) {
-        values.x_studio_preferred_delivery_date = preferredDeliveryDate;
-    }
-    const phoneNumber = input.phoneNumber?.trim();
-    if (phoneNumber) {
-        values.x_studio_phonenumber = phoneNumber;
-    }
-    const salePersonName = input.salePersonName?.trim();
-    if (salePersonName) {
-        values.x_studio_sale_person_name = salePersonName;
-    }
     if (input.paymentMethodLineId !== undefined &&
         Number.isFinite(input.paymentMethodLineId) &&
         input.paymentMethodLineId > 0) {
         values.preferred_payment_method_line_id = input.paymentMethodLineId;
     }
+    // Studio fields are written after create via the login session. API-key create
+    // often persists the order but silently drops x_studio_* fields.
+    const studioValues = {};
+    const deliveryNotes = input.deliveryNotes?.trim();
+    if (deliveryNotes) {
+        studioValues.x_studio_delivery_notes = deliveryNotes;
+    }
+    const preferredDeliveryDate = input.preferredDeliveryDate?.trim();
+    if (preferredDeliveryDate) {
+        studioValues.x_studio_preferred_delivery_date = preferredDeliveryDate;
+    }
+    const phoneNumber = input.phoneNumber?.trim();
+    if (phoneNumber) {
+        studioValues.x_studio_phonenumber = phoneNumber;
+    }
+    const salePersonName = input.salePersonName?.trim();
+    if (salePersonName) {
+        studioValues.x_studio_sale_person_name = salePersonName;
+    }
     const quotationId = await createOdooRecord(session, 'sale.order', values);
+    if (Object.keys(studioValues).length > 0) {
+        await writeOdooRecord(session, 'sale.order', quotationId, studioValues);
+    }
+    if (salePersonName) {
+        const verify = await readOdooRecord(session, 'sale.order', quotationId, ['x_studio_sale_person_name']);
+        const saved = String(verify?.x_studio_sale_person_name || '').trim();
+        if (saved !== salePersonName) {
+            throw new Error(`Sale Person Name was not saved to Odoo (expected "${salePersonName}", got "${saved || '(empty)'}"). Check field access on x_studio_sale_person_name.`);
+        }
+    }
     const created = await readOdooRecord(session, 'sale.order', quotationId, ['id', 'name']);
     return {
         id: quotationId,
@@ -811,6 +827,18 @@ export async function fetchOdooContacts(userId) {
         throw new Error(message);
     }
     return data.result ?? [];
+}
+/** Lean contact list for New Quotation — fewer fields, customers only. */
+export async function fetchOdooContactsForQuotation(userId) {
+    const session = getOdooSession(userId);
+    if (!session) {
+        throw new Error('Odoo session expired. Please log in again.');
+    }
+    const fields = [...CONTACT_BASE_FIELDS, PARTNER_TOWNSHIP_FIELD];
+    return searchReadOdooRecords(session, 'res.partner', [['customer_rank', '>', 0]], fields, {
+        order: 'name asc',
+        limit: 500,
+    });
 }
 export async function fetchOdooContactById(userId, contactId) {
     const session = getOdooSession(userId);

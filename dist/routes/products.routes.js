@@ -14,9 +14,8 @@ router.get('/', async (req, res) => {
             stock: product.qty_available ?? 0,
             active: product.active,
             category: Array.isArray(product.categ_id) ? product.categ_id[1] : '',
-            image: typeof product.image_128 === 'string' && product.image_128
-                ? `data:image/png;base64,${product.image_128}`
-                : '',
+            // Images omitted on list fetch for speed; UI uses ProductThumb placeholder.
+            image: '',
             unit: Array.isArray(product.uom_id) ? product.uom_id[1] : 'Units',
         }));
         return res.json({ data });

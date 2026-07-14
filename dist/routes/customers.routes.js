@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { env } from '../config/env.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { createOdooContact, fetchOdooContactById, fetchOdooContacts, fetchOdooPartnerAddressOptions, fetchOdooPartnerCategoryNames, fetchOdooPartnerTags, fetchOdooTownshipForPartner, fetchOdooTownships, resolvePartnerLocation, searchOdooContactsByPhone, } from '../services/odoo.service.js';
+import { createOdooContact, fetchOdooContactById, fetchOdooContacts, fetchOdooContactsForQuotation, fetchOdooPartnerAddressOptions, fetchOdooPartnerCategoryNames, fetchOdooPartnerTags, fetchOdooTownshipForPartner, fetchOdooTownships, resolvePartnerLocation, searchOdooContactsByPhone, } from '../services/odoo.service.js';
 import { splitTagNames, validateMyanmarPhone } from '../utils/myanmar-phone.js';
 const router = Router();
 function toStringValue(value) {
@@ -36,11 +36,16 @@ function toManyIds(value) {
 router.use(authMiddleware);
 router.get('/', async (req, res) => {
     try {
-        const contacts = await fetchOdooContacts(req.user.id);
+        const lite = String(req.query.lite ?? '') === '1';
+        const contacts = lite
+            ? await fetchOdooContactsForQuotation(req.user.id)
+            : await fetchOdooContacts(req.user.id);
         const data = contacts.map(contact => {
             const extra = {};
-            for (const field of env.odooContactExtraFields) {
-                extra[field] = toStringValue(contact[field]);
+            if (!lite) {
+                for (const field of env.odooContactExtraFields) {
+                    extra[field] = toStringValue(contact[field]);
+                }
             }
             return {
                 id: String(contact.id),
@@ -51,14 +56,14 @@ router.get('/', async (req, res) => {
                 jobPosition: toStringValue(contact.function),
                 company: toRelationName(contact.parent_id),
                 isCompany: Boolean(contact.is_company),
-                activity: toStringValue(contact.x_studio_monthly_activity),
+                activity: lite ? '' : toStringValue(contact.x_studio_monthly_activity),
                 township: toRelationName(contact.x_studio_many2one_field_8u9_1jp4l7r0g),
-                status: toStringValue(contact.x_studio_customer_status),
-                lastMonthSales: toNumberValue(contact.x_studio_last_month_sales),
-                thisMonthSales: toNumberValue(contact.x_studio_this_month_sales),
-                thisMonthPercent: toNumberValue(contact.x_studio_this_month_percent),
-                lastInvoiceDate: toStringValue(contact.x_studio_last_invoice_date),
-                expoPushToken: toStringValue(contact.x_studio_expo_push_token),
+                status: lite ? '' : toStringValue(contact.x_studio_customer_status),
+                lastMonthSales: lite ? 0 : toNumberValue(contact.x_studio_last_month_sales),
+                thisMonthSales: lite ? 0 : toNumberValue(contact.x_studio_this_month_sales),
+                thisMonthPercent: lite ? 0 : toNumberValue(contact.x_studio_this_month_percent),
+                lastInvoiceDate: lite ? '' : toStringValue(contact.x_studio_last_invoice_date),
+                expoPushToken: lite ? '' : toStringValue(contact.x_studio_expo_push_token),
                 extra,
             };
         });

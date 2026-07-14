@@ -511,6 +511,16 @@ async function createOdooRecord(
   return odooCallKw<number>(session.cookie, model, 'create', [values]);
 }
 
+/** Prefer the login cookie so Studio fields respect the user’s field access. */
+async function writeOdooRecord(
+  session: { cookie: string; uid: number },
+  model: string,
+  recordId: number,
+  values: Record<string, unknown>,
+): Promise<void> {
+  await odooCallKw(session.cookie, model, 'write', [[recordId], values]);
+}
+
 export type CreateQuotationLineInput = {
   productId: number;
   quantity: number;
@@ -572,26 +582,6 @@ export async function createOdooQuotation(
     order_line: orderLineCommands,
   };
 
-  const deliveryNotes = input.deliveryNotes?.trim();
-  if (deliveryNotes) {
-    values.x_studio_delivery_notes = deliveryNotes;
-  }
-
-  const preferredDeliveryDate = input.preferredDeliveryDate?.trim();
-  if (preferredDeliveryDate) {
-    values.x_studio_preferred_delivery_date = preferredDeliveryDate;
-  }
-
-  const phoneNumber = input.phoneNumber?.trim();
-  if (phoneNumber) {
-    values.x_studio_phonenumber = phoneNumber;
-  }
-
-  const salePersonName = input.salePersonName?.trim();
-  if (salePersonName) {
-    values.x_studio_sale_person_name = salePersonName;
-  }
-
   if (
     input.paymentMethodLineId !== undefined &&
     Number.isFinite(input.paymentMethodLineId) &&
@@ -600,7 +590,48 @@ export async function createOdooQuotation(
     values.preferred_payment_method_line_id = input.paymentMethodLineId;
   }
 
+  // Studio fields are written after create via the login session. API-key create
+  // often persists the order but silently drops x_studio_* fields.
+  const studioValues: Record<string, unknown> = {};
+
+  const deliveryNotes = input.deliveryNotes?.trim();
+  if (deliveryNotes) {
+    studioValues.x_studio_delivery_notes = deliveryNotes;
+  }
+
+  const preferredDeliveryDate = input.preferredDeliveryDate?.trim();
+  if (preferredDeliveryDate) {
+    studioValues.x_studio_preferred_delivery_date = preferredDeliveryDate;
+  }
+
+  const phoneNumber = input.phoneNumber?.trim();
+  if (phoneNumber) {
+    studioValues.x_studio_phonenumber = phoneNumber;
+  }
+
+  const salePersonName = input.salePersonName?.trim();
+  if (salePersonName) {
+    studioValues.x_studio_sale_person_name = salePersonName;
+  }
+
   const quotationId = await createOdooRecord(session, 'sale.order', values);
+
+  if (Object.keys(studioValues).length > 0) {
+    await writeOdooRecord(session, 'sale.order', quotationId, studioValues);
+  }
+
+  if (salePersonName) {
+    const verify = await readOdooRecord<{
+      x_studio_sale_person_name?: string | false;
+    }>(session, 'sale.order', quotationId, ['x_studio_sale_person_name']);
+    const saved = String(verify?.x_studio_sale_person_name || '').trim();
+    if (saved !== salePersonName) {
+      throw new Error(
+        `Sale Person Name was not saved to Odoo (expected "${salePersonName}", got "${saved || '(empty)'}"). Check field access on x_studio_sale_person_name.`,
+      );
+    }
+  }
+
   const created = await readOdooRecord<{ id: number; name: string }>(
     session,
     'sale.order',
