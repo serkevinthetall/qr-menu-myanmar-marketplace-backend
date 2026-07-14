@@ -32,7 +32,7 @@ export type OdooProduct = {
   name: string;
   default_code: string | false;
   list_price: number;
-  qty_available: number;
+  qty_available?: number;
   active: boolean;
   categ_id: [number, string] | false;
   image_128?: string | false;
@@ -271,7 +271,6 @@ export async function fetchOdooProducts(userId: string): Promise<OdooProduct[]> 
             'name',
             'default_code',
             'list_price',
-            'qty_available',
             'active',
             'categ_id',
             'uom_id',
@@ -279,8 +278,7 @@ export async function fetchOdooProducts(userId: string): Promise<OdooProduct[]> 
         ],
         kwargs: {
           order: 'name asc',
-          // Skip image_128 — base64 thumbnails inflate the payload by ~1–2MB
-          // and make New Quotation open slowly. ProductThumb shows a placeholder.
+          // Avoid image_128 (huge payload) and qty_available (slow computed field).
           limit: 500,
         },
       },
@@ -1405,6 +1403,30 @@ export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> 
   }
 
   return data.result ?? [];
+}
+
+/** Lean contact list for New Quotation — fewer fields, customers only. */
+export async function fetchOdooContactsForQuotation(
+  userId: string,
+): Promise<OdooContact[]> {
+  const session = getOdooSession(userId);
+
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const fields = [...CONTACT_BASE_FIELDS, PARTNER_TOWNSHIP_FIELD];
+
+  return searchReadOdooRecords<OdooContact>(
+    session,
+    'res.partner',
+    [['customer_rank', '>', 0]],
+    fields,
+    {
+      order: 'name asc',
+      limit: 500,
+    },
+  );
 }
 
 export async function fetchOdooContactById(

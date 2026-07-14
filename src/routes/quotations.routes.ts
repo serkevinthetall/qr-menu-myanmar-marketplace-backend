@@ -158,6 +158,14 @@ router.post('/', async (req: AuthRequest, res) => {
     return res.status(400).json({ message: 'Sale person name is required.' });
   }
 
+  if (!Number.isFinite(paymentMethodLineId) || paymentMethodLineId <= 0) {
+    return res.status(400).json({ message: 'Payment method is required.' });
+  }
+
+  if (!Number.isFinite(shippingPartnerId) || shippingPartnerId <= 0) {
+    return res.status(400).json({ message: 'Delivery location is required.' });
+  }
+
   const parsedLines = lines.map((line, index) => {
     const productId = Number(line.productId);
     const quantity = toNumberValue(line.quantity);
@@ -182,18 +190,12 @@ router.post('/', async (req: AuthRequest, res) => {
   try {
     const created = await createOdooQuotation(req.user!.id, {
       partnerId,
-      shippingPartnerId:
-        Number.isFinite(shippingPartnerId) && shippingPartnerId > 0
-          ? shippingPartnerId
-          : partnerId,
+      shippingPartnerId,
       salePersonName,
       deliveryNotes: deliveryNote,
       preferredDeliveryDate,
       phoneNumber: toStringValue(body.phoneNumber),
-      paymentMethodLineId:
-        Number.isFinite(paymentMethodLineId) && paymentMethodLineId > 0
-          ? paymentMethodLineId
-          : undefined,
+      paymentMethodLineId,
       lines: parsedLines,
     });
 
