@@ -1,6 +1,5 @@
-import { createApp } from './app.js';
+import app from './app.js';
 import { env } from './config/env.js';
-const app = createApp();
 app.listen(env.port, env.host, () => {
     const local = `http://localhost:${env.port}`;
     const lan = `http://${env.lanHost}:${env.port}`;
