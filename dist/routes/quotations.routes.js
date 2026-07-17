@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authMiddleware } from '../middleware/auth.js';
-import { createOdooQuotation, fetchOdooPartnerAddress, fetchOdooPaymentMethodLines, fetchOdooQuotationById, fetchOdooQuotationLines, fetchOdooQuotations, } from '../services/odoo.service.js';
+import { createOdooQuotation, fetchOdooPaymentMethodLines, fetchOdooQuotationById, fetchOdooQuotationDetailBundle, fetchOdooQuotations, } from '../services/odoo.service.js';
 const router = Router();
 function toStringValue(value) {
     if (value === false || value === null || value === undefined) {
@@ -167,16 +167,11 @@ router.get('/:id', async (req, res) => {
         return res.status(400).json({ message: 'Invalid quotation id.' });
     }
     try {
-        const quotation = await fetchOdooQuotationById(req.user.id, quotationId);
-        if (!quotation) {
+        const bundle = await fetchOdooQuotationDetailBundle(req.user.id, quotationId);
+        if (!bundle) {
             return res.status(404).json({ message: 'Quotation not found.' });
         }
-        const lines = await fetchOdooQuotationLines(req.user.id, quotationId);
-        const shippingPartnerId = toRelationId(quotation.partner_shipping_id) ||
-            toRelationId(quotation.partner_id);
-        const partnerAddress = shippingPartnerId
-            ? await fetchOdooPartnerAddress(req.user.id, shippingPartnerId)
-            : { formatted: '', phone: '' };
+        const { quotation, lines, partnerAddress } = bundle;
         const deliveryAddress = partnerAddress.formatted ||
             toRelationName(quotation.partner_shipping_id) ||
             toRelationName(quotation.partner_id);

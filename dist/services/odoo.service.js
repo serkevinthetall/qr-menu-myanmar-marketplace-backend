@@ -552,12 +552,30 @@ export async function fetchOdooQuotationById(userId, quotationId) {
     if (!session) {
         throw new Error('Odoo session expired. Please log in again.');
     }
-    const detail = await readOdooRecord(session, 'sale.order', quotationId, QUOTATION_DETAIL_FIELDS);
+    // Prefer the login session to avoid API-key timeout + cookie fallback latency.
+    const detail = await readOdooRecordAsUser(session, 'sale.order', quotationId, QUOTATION_DETAIL_FIELDS);
     if (detail) {
         return detail;
     }
-    const summary = await readOdooRecord(session, 'sale.order', quotationId, QUOTATION_LIST_FIELDS);
-    return summary;
+    return readOdooRecordAsUser(session, 'sale.order', quotationId, QUOTATION_LIST_FIELDS);
+}
+/** Header + lines + shipping address for the detail screen (parallelized). */
+export async function fetchOdooQuotationDetailBundle(userId, quotationId) {
+    const quotation = await fetchOdooQuotationById(userId, quotationId);
+    if (!quotation) {
+        return null;
+    }
+    const shippingPartnerId = odooRelationId(quotation.partner_shipping_id) ||
+        odooRelationId(quotation.partner_id);
+    const [lines, partnerAddress] = await Promise.all([
+        fetchOdooQuotationLines(userId, quotationId),
+        shippingPartnerId
+            ? fetchOdooPartnerAddress(userId, shippingPartnerId, {
+                resolveTownship: false,
+            })
+            : Promise.resolve({ formatted: '', phone: '' }),
+    ]);
+    return { quotation, lines, partnerAddress };
 }
 export async function fetchOdooPaymentMethodLines(userId) {
     const session = getOdooSession(userId);
@@ -892,7 +910,7 @@ export function formatOdooPartnerAddress(partner, location) {
     ].filter(Boolean);
     return parts.join(', ');
 }
-export async function fetchOdooPartnerAddress(userId, partnerId) {
+export async function fetchOdooPartnerAddress(userId, partnerId, options) {
     if (!Number.isFinite(partnerId) || partnerId <= 0) {
         return { formatted: '', phone: '' };
     }
@@ -900,11 +918,15 @@ export async function fetchOdooPartnerAddress(userId, partnerId) {
     if (!session) {
         throw new Error('Odoo session expired. Please log in again.');
     }
-    const partner = await readOdooRecord(session, 'res.partner', partnerId, PARTNER_ADDRESS_FIELDS);
+    const partner = await readOdooRecordAsUser(session, 'res.partner', partnerId, PARTNER_ADDRESS_FIELDS);
     if (!partner) {
         return { formatted: '', phone: '' };
     }
-    const township = await fetchOdooTownshipForPartner(userId, partner);
+    // Township many2one already includes [id, name] — skip extra township
+    // record fetch unless a caller needs postal/state enrichment.
+    const township = options?.resolveTownship === false
+        ? null
+        : await fetchOdooTownshipForPartner(userId, partner);
     const location = resolvePartnerLocation(partner, township);
     return {
         formatted: formatOdooPartnerAddress(partner, location),
@@ -916,7 +938,11 @@ export async function fetchOdooQuotationLines(userId, quotationId) {
     if (!session) {
         throw new Error('Odoo session expired. Please log in again.');
     }
-    return searchReadOdooRecords(session, 'sale.order.line', [['order_id', '=', quotationId]], ORDER_LINE_FIELDS, { order: 'sequence asc, id asc' });
+    // Cookie session only — avoids API-key attempt latency on the detail path.
+    return odooCallKw(session.cookie, 'sale.order.line', 'search_read', [
+        [['order_id', '=', quotationId]],
+        ORDER_LINE_FIELDS,
+    ], { order: 'sequence asc, id asc' });
 }
 export async function fetchOdooContacts(userId) {
     const session = getOdooSession(userId);
