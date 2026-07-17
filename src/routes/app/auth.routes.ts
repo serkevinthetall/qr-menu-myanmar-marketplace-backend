@@ -1,0 +1,84 @@
+import { Router } from 'express';
+import jwt, { SignOptions } from 'jsonwebtoken';
+import { z } from 'zod';
+
+import { env } from '../../config/env.js';
+import { authMiddleware } from '../../middleware/auth.js';
+import {
+  authenticateWithOdoo,
+  destroyOdooSession,
+} from '../../services/odoo.service.js';
+import { AuthRequest } from '../../types/auth.js';
+
+const router = Router();
+
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+
+/** Sales-rep app login — same Odoo auth, tagged for the handheld surface. */
+router.post('/login', async (req, res) => {
+  const parsed = loginSchema.safeParse(req.body);
+
+  if (!parsed.success) {
+    return res.status(400).json({
+      message: 'Invalid email or password.',
+      errors: parsed.error.flatten().fieldErrors,
+    });
+  }
+
+  const { email, password } = parsed.data;
+
+  try {
+    const odooUser = await authenticateWithOdoo(email, password);
+
+    const signOptions: SignOptions = {
+      expiresIn: env.jwtExpiresIn as SignOptions['expiresIn'],
+    };
+
+    const token = jwt.sign(
+      {
+        sub: String(odooUser.uid),
+        email: odooUser.email,
+        name: odooUser.name,
+        odooCookie: odooUser.cookie,
+        odooUid: odooUser.uid,
+        surface: 'app',
+      },
+      env.jwtSecret,
+      signOptions,
+    );
+
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    return res.json({
+      token,
+      user: {
+        id: String(odooUser.uid),
+        name: odooUser.name,
+        email: odooUser.email,
+      },
+      expiresAt,
+      surface: 'app',
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Login failed. Please try again.';
+    return res.status(401).json({ message });
+  }
+});
+
+router.get('/me', authMiddleware, (req: AuthRequest, res) => {
+  return res.json({ user: req.user, surface: 'app' });
+});
+
+router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
+  if (req.user?.id) {
+    await destroyOdooSession(req.user.id, req.odooSession);
+  }
+
+  return res.json({ message: 'Logged out successfully.' });
+});
+
+export default router;
