@@ -57,6 +57,13 @@ export function isAllowedCorsOrigin(origin: string | undefined): boolean {
     if (hostname.endsWith('.vercel.app')) {
       return true;
     }
+    // Production custom domains for QR Shop website.
+    if (
+      hostname === 'qrshopmyanmar.com' ||
+      hostname.endsWith('.qrshopmyanmar.com')
+    ) {
+      return true;
+    }
   } catch {
     return false;
   }
