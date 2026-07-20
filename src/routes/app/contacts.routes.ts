@@ -169,7 +169,7 @@ router.post('/', async (req: AuthRequest, res) => {
   }
 });
 
-/** Default delivery address for quotation create. */
+/** Delivery locations for quotation create (full list for sales-rep picker). */
 router.get('/:id/addresses', async (req: AuthRequest, res) => {
   const contactId = Number(req.params.id);
   if (!Number.isFinite(contactId) || contactId <= 0) {
@@ -181,7 +181,19 @@ router.get('/:id/addresses', async (req: AuthRequest, res) => {
     return res.json({
       data: {
         companyId: String(result.companyId),
+        companyName: result.companyName,
         defaultAddressId: String(result.defaultAddressId),
+        addresses: result.addresses.map(address => ({
+          id: String(address.id),
+          name: address.name,
+          phone: address.phone,
+          street: address.street,
+          street2: address.street2,
+          city: address.city,
+          township: address.township,
+          isMain: address.isMain,
+          label: address.label,
+        })),
       },
     });
   } catch (error) {
