@@ -161,20 +161,33 @@ function extractSessionCookie(setCookieHeaders: string[]): string {
 }
 
 export async function authenticateWithOdoo(login: string, password: string) {
-  const response = await fetch(`${env.odooUrl}/web/session/authenticate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'call',
-      params: {
-        db: env.odooDb,
-        login,
-        password,
-      },
-      id: Date.now(),
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${env.odooUrl}/web/session/authenticate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          db: env.odooDb,
+          login: login.trim(),
+          password,
+        },
+        id: Date.now(),
+      }),
+    });
+  } catch {
+    throw new Error(
+      'Could not reach Odoo. Check ODOO_URL on the server and try again.',
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Odoo authentication failed (HTTP ${response.status}). Check ODOO_URL / ODOO_DB.`,
+    );
+  }
 
   const setCookie =
     typeof response.headers.getSetCookie === 'function'

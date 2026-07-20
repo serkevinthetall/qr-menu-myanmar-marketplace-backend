@@ -12,18 +12,23 @@ import { AuthRequest } from '../../types/auth.js';
 
 const router = Router();
 
+// Odoo login can be an email OR a username — do not require email format.
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+  email: z.string().trim().min(1, 'Login is required.'),
+  password: z.string().min(1, 'Password is required.'),
 });
 
 /** Sales-rep app login — same Odoo auth, tagged for the handheld surface. */
 router.post('/login', async (req, res) => {
-  const parsed = loginSchema.safeParse(req.body);
+  const parsed = loginSchema.safeParse({
+    email: typeof req.body?.email === 'string' ? req.body.email.trim() : req.body?.email,
+    password:
+      typeof req.body?.password === 'string' ? req.body.password : req.body?.password,
+  });
 
   if (!parsed.success) {
     return res.status(400).json({
-      message: 'Invalid email or password.',
+      message: 'Please enter your Odoo login and password.',
       errors: parsed.error.flatten().fieldErrors,
     });
   }
