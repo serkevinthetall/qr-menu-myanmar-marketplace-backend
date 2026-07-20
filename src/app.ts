@@ -2,7 +2,7 @@ import cors from 'cors';
 import express from 'express';
 import morgan from 'morgan';
 
-import { env } from './config/env.js';
+import { env, isAllowedCorsOrigin } from './config/env.js';
 import { errorHandler } from './middleware/error-handler.js';
 import {
   jsonBodyParser,
@@ -17,11 +17,14 @@ export function createApp() {
 
   app.use(
     cors({
-      // In dev, reflect any origin so LAN IP changes (8081/19006) don't break fetch.
-      origin:
-        env.nodeEnv === 'development'
-          ? true
-          : env.corsOrigins,
+      // Dev: reflect any origin. Prod: CORS_ORIGINS + *.vercel.app frontends.
+      origin: (origin, callback) => {
+        if (env.nodeEnv === 'development' || isAllowedCorsOrigin(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(null, false);
+      },
       credentials: true,
     }),
   );

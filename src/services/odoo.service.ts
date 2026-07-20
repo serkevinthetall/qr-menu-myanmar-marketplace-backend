@@ -260,7 +260,14 @@ export async function destroyOdooSession(
 
 export async function fetchOdooProducts(
   userId: string,
-  options?: { limit?: number; offset?: number },
+  options?: {
+    limit?: number;
+    offset?: number;
+    /** Case-insensitive match on product name or internal reference (SKU). */
+    q?: string;
+    /** Exact match on product category display name. */
+    category?: string;
+  },
 ): Promise<OdooProduct[]> {
   const session = getOdooSession(userId);
 
@@ -277,6 +284,19 @@ export async function fetchOdooProducts(
       ? Math.floor(options.offset)
       : 0;
 
+  const q = String(options?.q ?? '').trim();
+  const category = String(options?.category ?? '').trim();
+
+  const domain: unknown[] = [['active', '=', true]];
+  if (q) {
+    domain.push('|');
+    domain.push(['name', 'ilike', q]);
+    domain.push(['default_code', 'ilike', q]);
+  }
+  if (category) {
+    domain.push(['categ_id.name', '=', category]);
+  }
+
   const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
     method: 'POST',
     headers: {
@@ -290,7 +310,7 @@ export async function fetchOdooProducts(
         model: 'product.product',
         method: 'search_read',
         args: [
-          [['active', '=', true]],
+          domain,
           [
             'id',
             'name',
@@ -867,12 +887,22 @@ async function searchReadOdooRecords<T>(
 
 export async function fetchOdooQuotations(
   userId: string,
+  options?: { limit?: number; offset?: number },
 ): Promise<OdooQuotation[]> {
   const session = getOdooSession(userId);
 
   if (!session) {
     throw new Error('Odoo session expired. Please log in again.');
   }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 1000;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
 
   const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
     method: 'POST',
@@ -889,7 +919,8 @@ export async function fetchOdooQuotations(
         args: [[], QUOTATION_LIST_FIELDS],
         kwargs: {
           order: 'create_date desc',
-          limit: 1000,
+          limit,
+          offset,
         },
       },
       id: Date.now(),
@@ -1669,7 +1700,7 @@ export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> 
 /** Lean contact list for New Quotation — fewer fields, customers only. */
 export async function fetchOdooContactsForQuotation(
   userId: string,
-  options?: { limit?: number; offset?: number },
+  options?: { limit?: number; offset?: number; q?: string },
 ): Promise<OdooContact[]> {
   const session = getOdooSession(userId);
 
@@ -1687,10 +1718,20 @@ export async function fetchOdooContactsForQuotation(
       ? Math.floor(options.offset)
       : 0;
 
+  const q = String(options?.q ?? '').trim();
+  const domain: unknown[] = [['customer_rank', '>', 0]];
+  if (q) {
+    domain.push('|');
+    domain.push('|');
+    domain.push(['name', 'ilike', q]);
+    domain.push(['phone', 'ilike', q]);
+    domain.push(['email', 'ilike', q]);
+  }
+
   return searchReadOdooRecords<OdooContact>(
     session,
     'res.partner',
-    [['customer_rank', '>', 0]],
+    domain,
     fields,
     {
       order: 'name asc',

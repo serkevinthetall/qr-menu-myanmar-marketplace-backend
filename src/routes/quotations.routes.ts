@@ -81,8 +81,14 @@ router.get('/payment-methods', async (req: AuthRequest, res) => {
 
 router.get('/', async (req: AuthRequest, res) => {
   try {
+    const limitRaw = Number(req.query.limit);
+    const offsetRaw = Number(req.query.offset);
+    const limit =
+      Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 200;
+    const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+
     const [quotations, paymentMethods] = await Promise.all([
-      fetchOdooQuotations(req.user!.id),
+      fetchOdooQuotations(req.user!.id, { limit, offset }),
       fetchOdooPaymentMethodLines(req.user!.id),
     ]);
 
@@ -102,7 +108,15 @@ router.get('/', async (req: AuthRequest, res) => {
       };
     });
 
-    return res.json({ data });
+    return res.json({
+      data,
+      meta: {
+        limit,
+        offset,
+        count: data.length,
+        hasMore: quotations.length >= limit,
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load quotations.';

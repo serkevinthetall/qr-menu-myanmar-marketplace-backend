@@ -34,6 +34,35 @@ function buildCorsOrigins(): string[] {
   return [...new Set([...fromEnv, ...autoOrigins])];
 }
 
+const corsOrigins = buildCorsOrigins();
+
+/**
+ * Allow listed origins, plus Vercel preview/production frontend URLs.
+ * Preview deployments get unique hostnames; blocking them causes browser
+ * "Failed to fetch" on login even when the API is healthy.
+ */
+export function isAllowedCorsOrigin(origin: string | undefined): boolean {
+  if (!origin) {
+    return true;
+  }
+  if (corsOrigins.includes(origin)) {
+    return true;
+  }
+  try {
+    const { hostname } = new URL(origin);
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return true;
+    }
+    // Any Vercel frontend deployment (production + preview).
+    if (hostname.endsWith('.vercel.app')) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 export const env = {
   port: Number(process.env.PORT ?? 4000),
   host: process.env.HOST ?? '0.0.0.0',
@@ -46,7 +75,7 @@ export const env = {
       ? required('JWT_SECRET')
       : required('JWT_SECRET', 'dev-only-change-in-production'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
-  corsOrigins: buildCorsOrigins(),
+  corsOrigins,
   odooUrl: required('ODOO_URL').replace(/\/$/, ''),
   odooDb: required('ODOO_DB'),
   odooApiKey: process.env.ODOO_API_KEY ?? '',

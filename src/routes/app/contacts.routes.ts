@@ -55,27 +55,18 @@ router.get('/', async (req: AuthRequest, res) => {
   try {
     const limitRaw = Number(req.query.limit);
     const offsetRaw = Number(req.query.offset);
-    const q = String(req.query.q ?? '').trim().toLowerCase();
-    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 100;
+    const q = String(req.query.q ?? '').trim();
+    const limit =
+      Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 100;
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
 
-    const fetchLimit = q ? Math.min(limit + offset + 200, 500) : limit;
-    const fetchOffset = q ? 0 : offset;
-
     const contacts = await fetchOdooContactsForQuotation(req.user!.id, {
-      limit: fetchLimit,
-      offset: fetchOffset,
+      limit,
+      offset,
+      q: q || undefined,
     });
 
-    let data = contacts.map(mapAppContact);
-
-    if (q) {
-      data = data.filter(item => {
-        const hay = `${item.name} ${item.phone} ${item.email} ${item.township} ${item.city}`.toLowerCase();
-        return hay.includes(q);
-      });
-      data = data.slice(offset, offset + limit);
-    }
+    const data = contacts.map(mapAppContact);
 
     return res.json({
       data,
@@ -83,7 +74,7 @@ router.get('/', async (req: AuthRequest, res) => {
         limit,
         offset,
         count: data.length,
-        hasMore: q ? data.length >= limit : contacts.length >= limit,
+        hasMore: contacts.length >= limit,
       },
     });
   } catch (error) {
