@@ -1,5 +1,19 @@
 import { Router } from 'express';
 
+/**
+ * Phone / sales-rep API surface — mounted at `/api/app`.
+ *
+ * | Area        | Path                         |
+ * |-------------|------------------------------|
+ * | Health      | GET  /api/app/health         |
+ * | Auth        | /api/app/auth/*              |
+ * | Contacts    | /api/app/contacts/*          |
+ * | Products    | /api/app/products/*          |
+ * | Quotations  | /api/app/quotations/*        |
+ *
+ * Website ERP uses `/api/auth`, `/api/customers`, `/api/products`, `/api/quotations`
+ * and must not call these routes.
+ */
 import authRoutes from './auth.routes.js';
 import contactsRoutes from './contacts.routes.js';
 import productsRoutes from './products.routes.js';
