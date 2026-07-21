@@ -368,6 +368,7 @@ export type OdooQuotationDetail = OdooQuotation & {
   x_studio_phonenumber: string | false;
   x_studio_preferred_delivery_date: string | false;
   x_studio_delivery_notes: string | false;
+  x_studio_sale_person_name: string | false;
   commitment_date: string | false;
 };
 
@@ -430,6 +431,7 @@ const QUOTATION_DETAIL_FIELDS = [
   'x_studio_phonenumber',
   'x_studio_preferred_delivery_date',
   'x_studio_delivery_notes',
+  'x_studio_sale_person_name',
   'commitment_date',
 ];
 
