@@ -1002,6 +1002,54 @@ export async function fetchOdooQuotationDetailBundle(
   return { quotation, lines, partnerAddress };
 }
 
+/**
+ * Cancel a draft quotation in Odoo (`action_cancel`).
+ * Only allowed when state is `draft` (UI label: Quotation).
+ */
+export async function cancelOdooQuotation(
+  userId: string,
+  quotationId: number,
+): Promise<OdooQuotationDetail> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const existing = await fetchOdooQuotationById(userId, quotationId);
+  if (!existing) {
+    throw new Error('Quotation not found.');
+  }
+
+  const state = String(existing.state || '');
+  if (state !== 'draft') {
+    throw new Error(
+      'Only quotations in Quotation status can be cancelled.',
+    );
+  }
+
+  try {
+    await odooCallKw(session.cookie, 'sale.order', 'action_cancel', [
+      [quotationId],
+    ]);
+  } catch (cookieError) {
+    try {
+      await odooExecuteKw(session.uid, 'sale.order', 'action_cancel', [
+        [quotationId],
+      ]);
+    } catch {
+      throw cookieError instanceof Error
+        ? cookieError
+        : new Error('Failed to cancel quotation in Odoo.');
+    }
+  }
+
+  const updated = await fetchOdooQuotationById(userId, quotationId);
+  if (!updated) {
+    throw new Error('Quotation was cancelled but could not be reloaded.');
+  }
+  return updated;
+}
+
 export async function fetchOdooPaymentMethodLines(
   userId: string,
 ): Promise<{ id: number; name: string }[]> {

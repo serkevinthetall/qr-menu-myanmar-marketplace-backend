@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import { authMiddleware } from '../../middleware/auth.js';
 import {
+  cancelOdooQuotation,
   createOdooQuotation,
   fetchOdooPaymentMethodLines,
   fetchOdooQuotationById,
@@ -73,6 +74,32 @@ router.get('/:id', async (req: AuthRequest, res) => {
       error instanceof Error ? error.message : 'Failed to load quotation.';
     console.error('[app/quotations/:id]', message);
     return res.status(500).json({ message });
+  }
+});
+
+router.post('/:id/cancel', async (req: AuthRequest, res) => {
+  const quotationId = Number(req.params.id);
+  if (!Number.isFinite(quotationId) || quotationId <= 0) {
+    return res.status(400).json({ message: 'Invalid quotation id.' });
+  }
+
+  try {
+    await cancelOdooQuotation(req.user!.id, quotationId);
+    const bundle = await fetchOdooQuotationDetailBundle(req.user!.id, quotationId);
+    if (!bundle) {
+      return res.status(404).json({ message: 'Quotation not found after cancel.' });
+    }
+    return res.json({ data: mapQuotationDetail(bundle) });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to cancel quotation.';
+    const status = /only quotations in quotation status/i.test(message)
+      ? 409
+      : /not found/i.test(message)
+        ? 404
+        : 500;
+    console.error('[app/quotations/:id/cancel]', message);
+    return res.status(status).json({ message });
   }
 });
 
