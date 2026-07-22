@@ -2050,3 +2050,156 @@ export async function fetchOdooMembershipCouponTicketById(
     MEMBERSHIP_COUPON_FIELDS,
   );
 }
+
+/* ─── Purchase Order (purchase.order) ─── */
+
+export type OdooPurchaseOrder = {
+  id: number;
+  name: string;
+  date_order: string | false;
+  partner_id: [number, string] | false;
+  amount_total: number;
+  state: string;
+  user_id: [number, string] | false;
+};
+
+export type OdooPurchaseOrderDetail = OdooPurchaseOrder & {
+  amount_untaxed: number;
+  currency_id: [number, string] | false;
+  date_planned: string | false;
+  origin: string | false;
+  notes: string | false;
+};
+
+export type OdooPurchaseOrderLine = {
+  id: number;
+  name: string;
+  product_id: [number, string] | false;
+  product_qty: number;
+  product_uom_id: [number, string] | false;
+  price_unit: number;
+  price_subtotal: number;
+};
+
+const PURCHASE_ORDER_LIST_FIELDS = [
+  'id',
+  'name',
+  'date_order',
+  'partner_id',
+  'amount_total',
+  'state',
+  'user_id',
+];
+
+const PURCHASE_ORDER_DETAIL_FIELDS = [
+  ...PURCHASE_ORDER_LIST_FIELDS,
+  'amount_untaxed',
+  'currency_id',
+  'date_planned',
+  'origin',
+  'notes',
+];
+
+const PURCHASE_ORDER_LINE_FIELDS = [
+  'id',
+  'name',
+  'product_id',
+  'product_qty',
+  'product_uom_id',
+  'price_unit',
+  'price_subtotal',
+];
+
+export async function fetchOdooPurchaseOrders(
+  userId: string,
+  options?: { limit?: number; offset?: number; q?: string },
+): Promise<OdooPurchaseOrder[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const q = options?.q?.trim();
+  const domain: unknown[] = q
+    ? ['|', ['name', 'ilike', q], ['partner_id', 'ilike', q]]
+    : [];
+
+  return searchReadOdooRecords<OdooPurchaseOrder>(
+    session,
+    'purchase.order',
+    domain,
+    PURCHASE_ORDER_LIST_FIELDS,
+    { order: 'date_order desc, id desc', limit, offset },
+  );
+}
+
+export async function fetchOdooPurchaseOrderById(
+  userId: string,
+  purchaseOrderId: number,
+): Promise<OdooPurchaseOrderDetail | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const detail = await readOdooRecordAsUser<OdooPurchaseOrderDetail>(
+    session,
+    'purchase.order',
+    purchaseOrderId,
+    PURCHASE_ORDER_DETAIL_FIELDS,
+  );
+
+  if (detail) {
+    return detail;
+  }
+
+  return readOdooRecordAsUser<OdooPurchaseOrderDetail>(
+    session,
+    'purchase.order',
+    purchaseOrderId,
+    PURCHASE_ORDER_LIST_FIELDS,
+  );
+}
+
+export async function fetchOdooPurchaseOrderLines(
+  userId: string,
+  purchaseOrderId: number,
+): Promise<OdooPurchaseOrderLine[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  return odooCallKw<OdooPurchaseOrderLine[]>(
+    session.cookie,
+    'purchase.order.line',
+    'search_read',
+    [[['order_id', '=', purchaseOrderId]], PURCHASE_ORDER_LINE_FIELDS],
+    { order: 'sequence asc, id asc' },
+  );
+}
+
+export async function fetchOdooPurchaseOrderDetailBundle(
+  userId: string,
+  purchaseOrderId: number,
+): Promise<{
+  purchaseOrder: OdooPurchaseOrderDetail;
+  lines: OdooPurchaseOrderLine[];
+} | null> {
+  const purchaseOrder = await fetchOdooPurchaseOrderById(userId, purchaseOrderId);
+  if (!purchaseOrder) {
+    return null;
+  }
+
+  const lines = await fetchOdooPurchaseOrderLines(userId, purchaseOrderId);
+  return { purchaseOrder, lines };
+}
