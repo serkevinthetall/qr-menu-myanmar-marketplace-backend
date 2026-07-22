@@ -2106,6 +2106,14 @@ const PURCHASE_ORDER_LINE_FIELDS = [
   'price_subtotal',
 ];
 
+const PURCHASE_ORDER_LINE_FIELDS_MIN = [
+  'id',
+  'name',
+  'product_id',
+  'product_qty',
+  'price_unit',
+];
+
 export async function fetchOdooPurchaseOrders(
   userId: string,
   options?: { limit?: number; offset?: number; q?: string },
@@ -2147,23 +2155,40 @@ export async function fetchOdooPurchaseOrderById(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  const detail = await readOdooRecordAsUser<OdooPurchaseOrderDetail>(
-    session,
-    'purchase.order',
-    purchaseOrderId,
-    PURCHASE_ORDER_DETAIL_FIELDS,
-  );
-
-  if (detail) {
-    return detail;
+  // Detail fields can differ by Odoo version — fall back to list fields on failure.
+  try {
+    const detail = await readOdooRecordAsUser<OdooPurchaseOrderDetail>(
+      session,
+      'purchase.order',
+      purchaseOrderId,
+      PURCHASE_ORDER_DETAIL_FIELDS,
+    );
+    if (detail) {
+      return detail;
+    }
+  } catch (error) {
+    console.warn(
+      '[purchase-orders] Detail fields failed, falling back to list fields:',
+      error instanceof Error ? error.message : error,
+    );
   }
 
-  return readOdooRecordAsUser<OdooPurchaseOrderDetail>(
-    session,
-    'purchase.order',
-    purchaseOrderId,
-    PURCHASE_ORDER_LIST_FIELDS,
-  );
+  try {
+    return await readOdooRecordAsUser<OdooPurchaseOrderDetail>(
+      session,
+      'purchase.order',
+      purchaseOrderId,
+      PURCHASE_ORDER_LIST_FIELDS,
+    );
+  } catch (error) {
+    console.error(
+      '[purchase-orders] Failed to read purchase order:',
+      error instanceof Error ? error.message : error,
+    );
+    throw error instanceof Error
+      ? error
+      : new Error('Failed to load purchase order.');
+  }
 }
 
 export async function fetchOdooPurchaseOrderLines(
@@ -2175,13 +2200,38 @@ export async function fetchOdooPurchaseOrderLines(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  return odooCallKw<OdooPurchaseOrderLine[]>(
-    session.cookie,
-    'purchase.order.line',
-    'search_read',
-    [[['order_id', '=', purchaseOrderId]], PURCHASE_ORDER_LINE_FIELDS],
-    { order: 'sequence asc, id asc' },
-  );
+  const domain = [['order_id', '=', purchaseOrderId]];
+
+  try {
+    return await odooCallKw<OdooPurchaseOrderLine[]>(
+      session.cookie,
+      'purchase.order.line',
+      'search_read',
+      [domain, PURCHASE_ORDER_LINE_FIELDS],
+      { order: 'id asc' },
+    );
+  } catch (error) {
+    console.warn(
+      '[purchase-orders] Line fields failed, retrying with minimal fields:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  try {
+    return await odooCallKw<OdooPurchaseOrderLine[]>(
+      session.cookie,
+      'purchase.order.line',
+      'search_read',
+      [domain, PURCHASE_ORDER_LINE_FIELDS_MIN],
+      { order: 'id asc' },
+    );
+  } catch (error) {
+    console.warn(
+      '[purchase-orders] Could not load order lines:',
+      error instanceof Error ? error.message : error,
+    );
+    return [];
+  }
 }
 
 export async function fetchOdooPurchaseOrderDetailBundle(
