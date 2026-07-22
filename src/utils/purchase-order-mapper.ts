@@ -41,7 +41,7 @@ export function mapPurchaseOrderDetail(input: {
       product:
         toRelationName(line.product_id) || toStringValue(line.name) || '—',
       quantity: toNumberValue(line.product_qty),
-      unit: toRelationName(line.product_uom_id) || 'Units',
+      unit: toRelationName(line.product_uom) || 'Units',
       unitPrice: toNumberValue(line.price_unit),
       amount: toNumberValue(line.price_subtotal),
     })),
