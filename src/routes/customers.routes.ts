@@ -63,9 +63,14 @@ router.get('/', async (req: AuthRequest, res) => {
     const offsetRaw = Number(req.query.offset);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+    const q = String(req.query.q ?? '').trim();
 
     const contacts = lite
-      ? await fetchOdooContactsForQuotation(req.user!.id, { limit, offset })
+      ? await fetchOdooContactsForQuotation(req.user!.id, {
+          limit,
+          offset,
+          q: q || undefined,
+        })
       : await fetchOdooContacts(req.user!.id);
 
     const data = contacts.map(contact => {

@@ -21,6 +21,11 @@ export function normalizeMyanmarPhone(number: string): string {
     clean = `0${clean.substring(4)}`;
   } else if (clean.startsWith('950')) {
     clean = `0${clean.substring(3)}`;
+  } else if (clean.startsWith('+95')) {
+    clean = `0${clean.substring(3)}`;
+  } else if (/^9\d{7,}$/.test(clean)) {
+    // Mobile without leading 0 → 09…
+    clean = `0${clean}`;
   }
 
   return clean;
@@ -42,15 +47,17 @@ export function validateMyanmarPhone(number: string, fieldName = 'Phone number')
   const phone = normalizeMyanmarPhone(number);
 
   if (phone.startsWith('+95')) {
-    throw new Error(`${fieldName} must use Myanmar local format starting with 0, not +95.`);
+    throw new Error(
+      `${fieldName} must use Myanmar local format starting with 09, not +95.`,
+    );
   }
 
   if (!/^[0-9]+$/.test(phone)) {
     throw new Error(`${fieldName} must contain digits only.`);
   }
 
-  if (!phone.startsWith('0')) {
-    throw new Error(`${fieldName} must start with 0.`);
+  if (!phone.startsWith('09')) {
+    throw new Error(`${fieldName} must start with 09.`);
   }
 
   if (phone.length < 8) {

@@ -1771,11 +1771,23 @@ export async function fetchOdooContactsForQuotation(
   const q = String(options?.q ?? '').trim();
   const domain: unknown[] = [['customer_rank', '>', 0]];
   if (q) {
-    domain.push('|');
-    domain.push('|');
-    domain.push(['name', 'ilike', q]);
-    domain.push(['phone', 'ilike', q]);
-    domain.push(['email', 'ilike', q]);
+    const phoneClauses: unknown[] = [
+      ['name', 'ilike', q],
+      ['phone', 'ilike', q],
+      ['email', 'ilike', q],
+    ];
+    const phoneNorm = normalizeMyanmarPhone(q);
+    if (phoneNorm && phoneNorm !== q) {
+      phoneClauses.push(['phone', 'ilike', phoneNorm]);
+    }
+    const last7 = lastPhoneDigits(q, 7);
+    if (last7.length >= 7) {
+      phoneClauses.push(['phone', 'ilike', last7]);
+    }
+    for (let i = 0; i < phoneClauses.length - 1; i += 1) {
+      domain.push('|');
+    }
+    domain.push(...phoneClauses);
   }
 
   return searchReadOdooRecords<OdooContact>(
