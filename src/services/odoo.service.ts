@@ -2075,7 +2075,6 @@ export type OdooPurchaseOrderLine = {
   name: string;
   product_id: [number, string] | false;
   product_qty: number;
-  product_uom: [number, string] | false;
   price_unit: number;
   price_subtotal: number;
 };
@@ -2103,7 +2102,6 @@ const PURCHASE_ORDER_LINE_FIELDS = [
   'name',
   'product_id',
   'product_qty',
-  'product_uom',
   'price_unit',
   'price_subtotal',
 ];
