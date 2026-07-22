@@ -2068,7 +2068,6 @@ export type OdooPurchaseOrderDetail = OdooPurchaseOrder & {
   currency_id: [number, string] | false;
   date_planned: string | false;
   origin: string | false;
-  notes: string | false;
 };
 
 export type OdooPurchaseOrderLine = {
@@ -2097,7 +2096,6 @@ const PURCHASE_ORDER_DETAIL_FIELDS = [
   'currency_id',
   'date_planned',
   'origin',
-  'notes',
 ];
 
 const PURCHASE_ORDER_LINE_FIELDS = [

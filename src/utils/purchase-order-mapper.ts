@@ -35,7 +35,6 @@ export function mapPurchaseOrderDetail(input: {
     currency: toRelationName(purchaseOrder.currency_id),
     scheduledDate: toStringValue(purchaseOrder.date_planned),
     origin: toStringValue(purchaseOrder.origin),
-    notes: toStringValue(purchaseOrder.notes),
     lines: lines.map(line => ({
       id: String(line.id),
       productId: String(toRelationId(line.product_id) || ''),
