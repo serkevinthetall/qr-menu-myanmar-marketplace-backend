@@ -1857,3 +1857,196 @@ async function readOdooRecords<T>(
 
   return odooCallKw<T[]>(session.cookie, model, 'read', [recordIds, fields]);
 }
+
+/* ─── Membership (x_membership) & Coupon Tickets (x_membership_coupon_ti) ─── */
+
+export type OdooMembership = {
+  id: number;
+  x_name: string | false;
+  x_studio_customer: [number, string] | false;
+  x_studio_membership_level: string | false;
+  x_studio_pricelist: [number, string] | false;
+  x_studio_start_date: string | false;
+  x_studio_end_date: string | false;
+  x_studio_status: string | false;
+  x_studio_monthly_coupon_amount: number;
+  x_studio_total_tickets: number;
+  x_studio_used_tickets: number;
+  x_studio_missed_tickets: number;
+  x_studio_remaining_tickets: number;
+  x_studio_benefits_summary: string | false;
+};
+
+export type OdooMembershipCouponTicket = {
+  id: number;
+  x_name: string | false;
+  x_studio_membership: [number, string] | false;
+  x_studio_customer: [number, string] | false;
+  x_studio_used_date: string | false;
+  x_studio_partner_id: [number, string] | false;
+  x_studio_currency: [number, string] | false;
+  x_studio_used_sale_order: [number, string] | false;
+  x_studio_status: string | false;
+  x_studio_coupon_program: string | false;
+  x_studio_coupon_amount: number;
+  x_studio_currency_id: [number, string] | false;
+  x_studio_ticket_month: string | false;
+  x_studio_coupon_code: string | false;
+};
+
+const MEMBERSHIP_FIELDS = [
+  'id',
+  'x_name',
+  'x_studio_customer',
+  'x_studio_membership_level',
+  'x_studio_pricelist',
+  'x_studio_start_date',
+  'x_studio_end_date',
+  'x_studio_status',
+  'x_studio_monthly_coupon_amount',
+  'x_studio_total_tickets',
+  'x_studio_used_tickets',
+  'x_studio_missed_tickets',
+  'x_studio_remaining_tickets',
+  'x_studio_benefits_summary',
+];
+
+const MEMBERSHIP_COUPON_FIELDS = [
+  'id',
+  'x_name',
+  'x_studio_membership',
+  'x_studio_customer',
+  'x_studio_used_date',
+  'x_studio_partner_id',
+  'x_studio_currency',
+  'x_studio_used_sale_order',
+  'x_studio_status',
+  'x_studio_coupon_program',
+  'x_studio_coupon_amount',
+  'x_studio_currency_id',
+  'x_studio_ticket_month',
+  'x_studio_coupon_code',
+];
+
+export async function fetchOdooMemberships(
+  userId: string,
+  options?: { limit?: number; offset?: number; q?: string },
+): Promise<OdooMembership[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const q = options?.q?.trim();
+  const domain: unknown[] = q
+    ? [
+        '|',
+        '|',
+        ['x_name', 'ilike', q],
+        ['x_studio_customer', 'ilike', q],
+        ['x_studio_status', 'ilike', q],
+      ]
+    : [];
+
+  return searchReadOdooRecords<OdooMembership>(
+    session,
+    'x_membership',
+    domain,
+    MEMBERSHIP_FIELDS,
+    { order: 'id desc', limit, offset },
+  );
+}
+
+export async function fetchOdooMembershipById(
+  userId: string,
+  membershipId: number,
+): Promise<OdooMembership | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  return readOdooRecordAsUser<OdooMembership>(
+    session,
+    'x_membership',
+    membershipId,
+    MEMBERSHIP_FIELDS,
+  );
+}
+
+export async function fetchOdooMembershipCouponTickets(
+  userId: string,
+  options?: { limit?: number; offset?: number; q?: string; membershipId?: number },
+): Promise<OdooMembershipCouponTicket[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [];
+  if (
+    options?.membershipId !== undefined &&
+    Number.isFinite(options.membershipId) &&
+    options.membershipId > 0
+  ) {
+    domain.push(['x_studio_membership', '=', options.membershipId]);
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    const search: unknown[] = [
+      '|',
+      '|',
+      '|',
+      ['x_name', 'ilike', q],
+      ['x_studio_coupon_code', 'ilike', q],
+      ['x_studio_customer', 'ilike', q],
+      ['x_studio_status', 'ilike', q],
+    ];
+    if (domain.length > 0) {
+      domain.unshift('&');
+    }
+    domain.push(...search);
+  }
+
+  return searchReadOdooRecords<OdooMembershipCouponTicket>(
+    session,
+    'x_membership_coupon_ti',
+    domain,
+    MEMBERSHIP_COUPON_FIELDS,
+    { order: 'id desc', limit, offset },
+  );
+}
+
+export async function fetchOdooMembershipCouponTicketById(
+  userId: string,
+  ticketId: number,
+): Promise<OdooMembershipCouponTicket | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  return readOdooRecordAsUser<OdooMembershipCouponTicket>(
+    session,
+    'x_membership_coupon_ti',
+    ticketId,
+    MEMBERSHIP_COUPON_FIELDS,
+  );
+}

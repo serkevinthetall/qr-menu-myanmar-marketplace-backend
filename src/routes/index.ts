@@ -9,6 +9,8 @@ import { Router } from 'express';
  *   /api/customers/*
  *   /api/products/*
  *   /api/quotations/*
+ *   /api/memberships/*
+ *   /api/membership-coupons/*
  *
  * PHONE APP (sales-rep handheld):
  *   /api/app/health
@@ -23,6 +25,8 @@ import { Router } from 'express';
 import appRoutes from './app/index.js';
 import authRoutes from './auth.routes.js';
 import customersRoutes from './customers.routes.js';
+import membershipCouponsRoutes from './membership-coupons.routes.js';
+import membershipsRoutes from './memberships.routes.js';
 import productsRoutes from './products.routes.js';
 import quotationsRoutes from './quotations.routes.js';
 
@@ -41,6 +45,8 @@ router.use('/auth', authRoutes);
 router.use('/customers', customersRoutes);
 router.use('/products', productsRoutes);
 router.use('/quotations', quotationsRoutes);
+router.use('/memberships', membershipsRoutes);
+router.use('/membership-coupons', membershipCouponsRoutes);
 
 /** Handheld sales-rep app API (separate from web ERP routes). */
 router.use('/app', appRoutes);
