@@ -39,6 +39,13 @@ export type OdooProduct = {
   uom_id: [number, string] | false;
 };
 
+export type OdooProductDetail = OdooProduct & {
+  barcode: string | false;
+  description_sale: string | false;
+  type: string | false;
+  standard_price?: number;
+};
+
 export type OdooContact = {
   id: number;
   name: string;
@@ -341,6 +348,76 @@ export async function fetchOdooProducts(
   }
 
   return data.result ?? [];
+}
+
+const PRODUCT_DETAIL_FIELDS = [
+  'id',
+  'name',
+  'default_code',
+  'list_price',
+  'qty_available',
+  'active',
+  'categ_id',
+  'uom_id',
+  'barcode',
+  'description_sale',
+  'type',
+  'standard_price',
+  'image_128',
+];
+
+const PRODUCT_DETAIL_FIELDS_MIN = [
+  'id',
+  'name',
+  'default_code',
+  'list_price',
+  'active',
+  'categ_id',
+  'uom_id',
+];
+
+export async function fetchOdooProductById(
+  userId: string,
+  productId: number,
+): Promise<OdooProductDetail | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  try {
+    const detail = await readOdooRecordAsUser<OdooProductDetail>(
+      session,
+      'product.product',
+      productId,
+      PRODUCT_DETAIL_FIELDS,
+    );
+    if (detail) {
+      return detail;
+    }
+  } catch (error) {
+    console.warn(
+      '[products] Detail fields failed, falling back to minimal fields:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  try {
+    return await readOdooRecordAsUser<OdooProductDetail>(
+      session,
+      'product.product',
+      productId,
+      PRODUCT_DETAIL_FIELDS_MIN,
+    );
+  } catch (error) {
+    console.error(
+      '[products] Failed to read product:',
+      error instanceof Error ? error.message : error,
+    );
+    throw error instanceof Error
+      ? error
+      : new Error('Failed to load product.');
+  }
 }
 
 export type OdooQuotation = {
