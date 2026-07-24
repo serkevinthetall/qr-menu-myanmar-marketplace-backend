@@ -2261,3 +2261,214 @@ export async function fetchOdooPurchaseOrderDetailBundle(
   const lines = await fetchOdooPurchaseOrderLines(userId, purchaseOrderId);
   return { purchaseOrder, lines };
 }
+
+/* ─── Sale Order (sale.order confirmed: sale / done) — view only ─── */
+
+export type OdooSaleOrder = {
+  id: number;
+  name: string;
+  date_order: string | false;
+  partner_id: [number, string] | false;
+  amount_total: number;
+  state: string;
+  user_id: [number, string] | false;
+};
+
+export type OdooSaleOrderDetail = OdooSaleOrder & {
+  amount_untaxed: number;
+  currency_id: [number, string] | false;
+  commitment_date: string | false;
+  client_order_ref: string | false;
+  partner_shipping_id: [number, string] | false;
+};
+
+export type OdooSaleOrderLine = {
+  id: number;
+  name: string;
+  product_id: [number, string] | false;
+  product_uom_qty: number;
+  price_unit: number;
+  price_subtotal: number;
+};
+
+const SALE_ORDER_LIST_FIELDS = [
+  'id',
+  'name',
+  'date_order',
+  'partner_id',
+  'amount_total',
+  'state',
+  'user_id',
+];
+
+const SALE_ORDER_DETAIL_FIELDS = [
+  ...SALE_ORDER_LIST_FIELDS,
+  'amount_untaxed',
+  'currency_id',
+  'commitment_date',
+  'client_order_ref',
+  'partner_shipping_id',
+];
+
+const SALE_ORDER_LINE_FIELDS = [
+  'id',
+  'name',
+  'product_id',
+  'product_uom_qty',
+  'price_unit',
+  'price_subtotal',
+];
+
+const SALE_ORDER_LINE_FIELDS_MIN = [
+  'id',
+  'name',
+  'product_id',
+  'product_uom_qty',
+  'price_unit',
+];
+
+export async function fetchOdooSaleOrders(
+  userId: string,
+  options?: { limit?: number; offset?: number; q?: string },
+): Promise<OdooSaleOrder[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [['state', 'in', ['sale', 'done']]];
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push('|');
+    domain.push('|');
+    domain.push(['name', 'ilike', q]);
+    domain.push(['partner_id', 'ilike', q]);
+    domain.push(['client_order_ref', 'ilike', q]);
+  }
+
+  return searchReadOdooRecords<OdooSaleOrder>(
+    session,
+    'sale.order',
+    domain,
+    SALE_ORDER_LIST_FIELDS,
+    { order: 'date_order desc, id desc', limit, offset },
+  );
+}
+
+export async function fetchOdooSaleOrderById(
+  userId: string,
+  saleOrderId: number,
+): Promise<OdooSaleOrderDetail | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  try {
+    const detail = await readOdooRecordAsUser<OdooSaleOrderDetail>(
+      session,
+      'sale.order',
+      saleOrderId,
+      SALE_ORDER_DETAIL_FIELDS,
+    );
+    if (detail) {
+      return detail;
+    }
+  } catch (error) {
+    console.warn(
+      '[sale-orders] Detail fields failed, falling back to list fields:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  try {
+    return await readOdooRecordAsUser<OdooSaleOrderDetail>(
+      session,
+      'sale.order',
+      saleOrderId,
+      SALE_ORDER_LIST_FIELDS,
+    );
+  } catch (error) {
+    console.error(
+      '[sale-orders] Failed to read sale order:',
+      error instanceof Error ? error.message : error,
+    );
+    throw error instanceof Error
+      ? error
+      : new Error('Failed to load sale order.');
+  }
+}
+
+export async function fetchOdooSaleOrderLines(
+  userId: string,
+  saleOrderId: number,
+): Promise<OdooSaleOrderLine[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const domain = [['order_id', '=', saleOrderId]];
+
+  try {
+    return await odooCallKw<OdooSaleOrderLine[]>(
+      session.cookie,
+      'sale.order.line',
+      'search_read',
+      [domain, SALE_ORDER_LINE_FIELDS],
+      { order: 'id asc' },
+    );
+  } catch (error) {
+    console.warn(
+      '[sale-orders] Line fields failed, retrying with minimal fields:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  try {
+    return await odooCallKw<OdooSaleOrderLine[]>(
+      session.cookie,
+      'sale.order.line',
+      'search_read',
+      [domain, SALE_ORDER_LINE_FIELDS_MIN],
+      { order: 'id asc' },
+    );
+  } catch (error) {
+    console.warn(
+      '[sale-orders] Could not load order lines:',
+      error instanceof Error ? error.message : error,
+    );
+    return [];
+  }
+}
+
+export async function fetchOdooSaleOrderDetailBundle(
+  userId: string,
+  saleOrderId: number,
+): Promise<{
+  saleOrder: OdooSaleOrderDetail;
+  lines: OdooSaleOrderLine[];
+} | null> {
+  const saleOrder = await fetchOdooSaleOrderById(userId, saleOrderId);
+  if (!saleOrder) {
+    return null;
+  }
+
+  // View module: only confirmed sale orders (sale / done).
+  const state = String(saleOrder.state || '');
+  if (state !== 'sale' && state !== 'done') {
+    return null;
+  }
+
+  const lines = await fetchOdooSaleOrderLines(userId, saleOrderId);
+  return { saleOrder, lines };
+}
