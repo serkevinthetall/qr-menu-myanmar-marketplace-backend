@@ -2549,3 +2549,411 @@ export async function fetchOdooSaleOrderDetailBundle(
   const lines = await fetchOdooSaleOrderLines(userId, saleOrderId);
   return { saleOrder, lines };
 }
+
+/* ─── Overview / Insights dashboard ─── */
+
+export type OverviewPeriod = 'day' | 'week' | 'month';
+
+type OverviewPartnerRow = {
+  id: number;
+  city: string | false;
+  [PARTNER_TOWNSHIP_FIELD]: [number, string] | false;
+};
+
+type OverviewLineRow = {
+  id: number;
+  product_id: [number, string] | false;
+  price_subtotal: number;
+  product_uom_qty: number;
+  display_type?: string | false;
+};
+
+function yangonParts(date: Date): {
+  y: number;
+  m: number;
+  d: number;
+  h: number;
+} {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Yangon',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(date);
+  const get = (type: string) =>
+    Number(parts.find(part => part.type === type)?.value ?? '0');
+  return { y: get('year'), m: get('month'), d: get('day'), h: get('hour') };
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function yangonDateKey(date: Date): string {
+  const { y, m, d } = yangonParts(date);
+  return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+function yangonHourKey(date: Date): string {
+  const { y, m, d, h } = yangonParts(date);
+  return `${y}-${pad2(m)}-${pad2(d)}T${pad2(h)}`;
+}
+
+function parseOdooDate(value: string | false | undefined): Date | null {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return null;
+  }
+  // Odoo often returns naive UTC-like "YYYY-MM-DD HH:mm:ss"
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const withZ = /Z$|[+-]\d{2}:?\d{2}$/.test(normalized)
+    ? normalized
+    : `${normalized}Z`;
+  const date = new Date(withZ);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function buildPeriodWindow(period: OverviewPeriod, now = new Date()) {
+  const { y, m, d } = yangonParts(now);
+  // Approximate Yangon local midnight as UTC+06:30
+  const localMidnightUtc = Date.UTC(y, m - 1, d) - 6.5 * 60 * 60 * 1000;
+
+  if (period === 'day') {
+    const from = new Date(localMidnightUtc);
+    const to = new Date(localMidnightUtc + 24 * 60 * 60 * 1000);
+    const prevFrom = new Date(from.getTime() - 24 * 60 * 60 * 1000);
+    const prevTo = from;
+    const buckets: string[] = [];
+    for (let hour = 0; hour < 24; hour += 1) {
+      buckets.push(`${y}-${pad2(m)}-${pad2(d)}T${pad2(hour)}`);
+    }
+    return { from, to, prevFrom, prevTo, buckets, bucketMode: 'hour' as const };
+  }
+
+  if (period === 'week') {
+    // Last 7 calendar days including today (Yangon)
+    const to = new Date(localMidnightUtc + 24 * 60 * 60 * 1000);
+    const from = new Date(localMidnightUtc - 6 * 24 * 60 * 60 * 1000);
+    const prevTo = from;
+    const prevFrom = new Date(from.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const buckets: string[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const day = new Date(from.getTime() + i * 24 * 60 * 60 * 1000);
+      buckets.push(yangonDateKey(day));
+    }
+    return { from, to, prevFrom, prevTo, buckets, bucketMode: 'day' as const };
+  }
+
+  // month: current calendar month in Yangon
+  const monthStartUtc = Date.UTC(y, m - 1, 1) - 6.5 * 60 * 60 * 1000;
+  const nextMonthStartUtc = Date.UTC(y, m, 1) - 6.5 * 60 * 60 * 1000;
+  const from = new Date(monthStartUtc);
+  const to = new Date(nextMonthStartUtc);
+  const prevMonthStartUtc = Date.UTC(y, m - 2, 1) - 6.5 * 60 * 60 * 1000;
+  const prevFrom = new Date(prevMonthStartUtc);
+  const prevTo = from;
+  const buckets: string[] = [];
+  const cursor = new Date(from.getTime());
+  while (cursor < to) {
+    buckets.push(yangonDateKey(cursor));
+    cursor.setTime(cursor.getTime() + 24 * 60 * 60 * 1000);
+  }
+  return { from, to, prevFrom, prevTo, buckets, bucketMode: 'day' as const };
+}
+
+function toOdooDatetime(date: Date): string {
+  return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function trendPercent(current: number, previous: number): number {
+  if (!Number.isFinite(previous) || previous === 0) {
+    return current > 0 ? 100 : 0;
+  }
+  return Math.round(((current - previous) / Math.abs(previous)) * 1000) / 10;
+}
+
+function areaLabel(partner: OverviewPartnerRow): string {
+  const township = Array.isArray(partner[PARTNER_TOWNSHIP_FIELD])
+    ? String(partner[PARTNER_TOWNSHIP_FIELD][1] || '').trim()
+    : '';
+  const city = String(partner.city || '').trim();
+  return township || city || 'Unknown area';
+}
+
+function sumOrders(orders: OdooSaleOrder[]): number {
+  return orders.reduce((sum, order) => sum + (Number(order.amount_total) || 0), 0);
+}
+
+export async function fetchOverviewInsights(
+  userId: string,
+  period: OverviewPeriod,
+) {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const window = buildPeriodWindow(period);
+  const fromStr = toOdooDatetime(window.from);
+  const toStr = toOdooDatetime(window.to);
+  const prevFromStr = toOdooDatetime(window.prevFrom);
+  const prevToStr = toOdooDatetime(window.prevTo);
+
+  const saleDomain: unknown[] = [
+    ['state', 'in', ['sale', 'done']],
+    ['date_order', '>=', fromStr],
+    ['date_order', '<', toStr],
+  ];
+  const prevSaleDomain: unknown[] = [
+    ['state', 'in', ['sale', 'done']],
+    ['date_order', '>=', prevFromStr],
+    ['date_order', '<', prevToStr],
+  ];
+
+  const [
+    saleOrders,
+    prevSaleOrders,
+    customerCount,
+    openQuotationCount,
+    activeMembershipCount,
+  ] = await Promise.all([
+    searchReadOdooRecords<OdooSaleOrder>(
+      session,
+      'sale.order',
+      saleDomain,
+      SALE_ORDER_LIST_FIELDS,
+      { order: 'date_order desc, id desc', limit: 1000 },
+    ),
+    searchReadOdooRecords<OdooSaleOrder>(
+      session,
+      'sale.order',
+      prevSaleDomain,
+      ['id', 'amount_total'],
+      { limit: 1000 },
+    ),
+    odooCallKw<number>(session.cookie, 'res.partner', 'search_count', [
+      [['customer_rank', '>', 0]],
+    ]),
+    odooCallKw<number>(session.cookie, 'sale.order', 'search_count', [
+      [['state', 'in', ['draft', 'sent']]],
+    ]),
+    odooCallKw<number>(session.cookie, 'x_membership', 'search_count', [
+      [['x_studio_status', 'ilike', 'active']],
+    ]).catch(async () => {
+      // Fallback if ilike domain fails: load a page and count in memory.
+      const rows = await searchReadOdooRecords<{
+        id: number;
+        x_studio_status: string | false;
+      }>(session, 'x_membership', [], ['id', 'x_studio_status'], { limit: 500 });
+      return rows.filter(row =>
+        String(row.x_studio_status || '')
+          .toLowerCase()
+          .includes('active'),
+      ).length;
+    }),
+  ]);
+
+  const saleAmount = sumOrders(saleOrders);
+  const prevSaleAmount = sumOrders(prevSaleOrders as OdooSaleOrder[]);
+  const orderCount = saleOrders.length;
+  const prevOrderCount = prevSaleOrders.length;
+  const avgOrderValue = orderCount > 0 ? saleAmount / orderCount : 0;
+  const prevAvg =
+    prevOrderCount > 0 ? prevSaleAmount / prevOrderCount : 0;
+
+  // Partner areas for current-period orders
+  const partnerIds = Array.from(
+    new Set(
+      saleOrders
+        .map(order =>
+          Array.isArray(order.partner_id) ? Number(order.partner_id[0]) : 0,
+        )
+        .filter(id => id > 0),
+    ),
+  );
+
+  let partners: OverviewPartnerRow[] = [];
+  if (partnerIds.length > 0) {
+    partners = await searchReadOdooRecords<OverviewPartnerRow>(
+      session,
+      'res.partner',
+      [['id', 'in', partnerIds]],
+      ['id', 'city', PARTNER_TOWNSHIP_FIELD],
+      { limit: partnerIds.length },
+    );
+  }
+
+  const partnerArea = new Map<number, string>();
+  for (const partner of partners) {
+    partnerArea.set(partner.id, areaLabel(partner));
+  }
+
+  const areaTotals = new Map<string, number>();
+  const areaSeriesMap = new Map<string, Map<string, number>>();
+
+  for (const order of saleOrders) {
+    const partnerId = Array.isArray(order.partner_id)
+      ? Number(order.partner_id[0])
+      : 0;
+    const area = partnerArea.get(partnerId) || 'Unknown area';
+    const amount = Number(order.amount_total) || 0;
+    areaTotals.set(area, (areaTotals.get(area) || 0) + amount);
+
+    const orderDate = parseOdooDate(order.date_order);
+    if (!orderDate) {
+      continue;
+    }
+    const bucket =
+      window.bucketMode === 'hour'
+        ? yangonHourKey(orderDate)
+        : yangonDateKey(orderDate);
+    if (!areaSeriesMap.has(area)) {
+      areaSeriesMap.set(area, new Map());
+    }
+    const series = areaSeriesMap.get(area)!;
+    series.set(bucket, (series.get(bucket) || 0) + amount);
+  }
+
+  const topAreas = [...areaTotals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, total]) => ({ name, total }));
+
+  const areaChart = {
+    buckets: window.buckets,
+    series: topAreas.map(area => ({
+      name: area.name,
+      total: area.total,
+      points: window.buckets.map(bucket => ({
+        bucket,
+        value: areaSeriesMap.get(area.name)?.get(bucket) || 0,
+      })),
+    })),
+  };
+
+  // Product rankings from sale order lines
+  const orderIds = saleOrders.map(order => order.id);
+  const productTotals = new Map<
+    string,
+    { id: string; name: string; revenue: number; qty: number }
+  >();
+
+  if (orderIds.length > 0) {
+    const chunkSize = 200;
+    for (let i = 0; i < orderIds.length; i += chunkSize) {
+      const chunk = orderIds.slice(i, i + chunkSize);
+      let lines: OverviewLineRow[] = [];
+      try {
+        lines = await searchReadOdooRecords<OverviewLineRow>(
+          session,
+          'sale.order.line',
+          [
+            ['order_id', 'in', chunk],
+            ['display_type', '=', false],
+          ],
+          [
+            'id',
+            'product_id',
+            'price_subtotal',
+            'product_uom_qty',
+            'display_type',
+          ],
+          { limit: 2000 },
+        );
+      } catch {
+        lines = await searchReadOdooRecords<OverviewLineRow>(
+          session,
+          'sale.order.line',
+          [['order_id', 'in', chunk]],
+          ['id', 'product_id', 'price_subtotal', 'product_uom_qty'],
+          { limit: 2000 },
+        );
+      }
+
+      for (const line of lines) {
+        if (line.display_type) {
+          continue;
+        }
+        const productId = Array.isArray(line.product_id)
+          ? String(line.product_id[0])
+          : '';
+        const productName = Array.isArray(line.product_id)
+          ? String(line.product_id[1] || '').trim()
+          : '';
+        if (!productId || !productName) {
+          continue;
+        }
+        const existing = productTotals.get(productId) || {
+          id: productId,
+          name: productName,
+          revenue: 0,
+          qty: 0,
+        };
+        existing.revenue += Number(line.price_subtotal) || 0;
+        existing.qty += Number(line.product_uom_qty) || 0;
+        productTotals.set(productId, existing);
+      }
+    }
+  }
+
+  const rankedProducts = [...productTotals.values()].sort(
+    (a, b) => b.revenue - a.revenue,
+  );
+  const topProducts = rankedProducts.slice(0, 3);
+  const bottomProducts =
+    rankedProducts.length <= 3
+      ? []
+      : [...rankedProducts].reverse().slice(0, 3);
+
+  const recentOrders = saleOrders.slice(0, 8).map(order => ({
+    id: String(order.id),
+    number: String(order.name || ''),
+    customer: Array.isArray(order.partner_id)
+      ? String(order.partner_id[1] || '')
+      : '',
+    total: Number(order.amount_total) || 0,
+    orderDate: String(order.date_order || ''),
+    status: String(order.state || ''),
+  }));
+
+  return {
+    period,
+    range: {
+      from: fromStr,
+      to: toStr,
+    },
+    kpis: {
+      saleAmount: {
+        value: saleAmount,
+        trend: trendPercent(saleAmount, prevSaleAmount),
+      },
+      confirmedOrders: {
+        value: orderCount,
+        trend: trendPercent(orderCount, prevOrderCount),
+      },
+      totalCustomers: {
+        value: Number(customerCount) || 0,
+        trend: 0,
+      },
+      openQuotations: {
+        value: Number(openQuotationCount) || 0,
+        trend: 0,
+      },
+      activeMemberships: {
+        value: Number(activeMembershipCount) || 0,
+        trend: 0,
+      },
+      avgOrderValue: {
+        value: avgOrderValue,
+        trend: trendPercent(avgOrderValue, prevAvg),
+      },
+    },
+    areaChart,
+    topProducts,
+    bottomProducts,
+    recentOrders,
+  };
+}
