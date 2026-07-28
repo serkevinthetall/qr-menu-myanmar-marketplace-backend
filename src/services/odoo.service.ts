@@ -2980,6 +2980,114 @@ export async function fetchOverviewInsights(
       ? []
       : [...rankedProducts].reverse().slice(0, 3);
 
+  const demandRanked = [...productTotals.values()].sort(
+    (a, b) => b.qty - a.qty,
+  );
+  const topDemandCandidates = demandRanked.slice(0, 3);
+
+  const stockByProductId = new Map<number, number>();
+  const demandProductIds = topDemandCandidates
+    .map(row => Number(row.id))
+    .filter(id => Number.isFinite(id) && id > 0);
+
+  let lowestOnHandProducts: Array<{
+    id: string;
+    name: string;
+    onHand: number;
+  }> = [];
+  let highestDemandProducts: Array<{
+    id: string;
+    name: string;
+    demandQty: number;
+    onHand: number;
+    revenue: number;
+  }> = [];
+
+  try {
+    // Lowest on-hand: sample stockable products and pick the 3 lowest qty.
+    // qty_available is often non-stored, so we sort in memory.
+    type StockProductRow = {
+      id: number;
+      name: string;
+      qty_available?: number;
+    };
+    let stockRows: StockProductRow[] = [];
+    try {
+      stockRows = await searchReadOdooRecords<StockProductRow>(
+        session,
+        'product.product',
+        [
+          ['active', '=', true],
+          ['sale_ok', '=', true],
+          ['type', 'in', ['product', 'consu']],
+        ],
+        ['id', 'name', 'qty_available'],
+        { limit: 400 },
+      );
+    } catch {
+      stockRows = await searchReadOdooRecords<StockProductRow>(
+        session,
+        'product.product',
+        [['active', '=', true], ['sale_ok', '=', true]],
+        ['id', 'name', 'qty_available'],
+        { limit: 400 },
+      );
+    }
+
+    for (const row of stockRows) {
+      stockByProductId.set(row.id, Number(row.qty_available) || 0);
+    }
+
+    lowestOnHandProducts = [...stockRows]
+      .map(row => ({
+        id: String(row.id),
+        name: String(row.name || '').trim() || `Product #${row.id}`,
+        onHand: Number(row.qty_available) || 0,
+      }))
+      .sort((a, b) => a.onHand - b.onHand)
+      .slice(0, 3);
+
+    // Fill any missing demand-product stock from a targeted read.
+    const missingDemandIds = demandProductIds.filter(
+      id => !stockByProductId.has(id),
+    );
+    if (missingDemandIds.length > 0) {
+      const extra = await searchReadOdooRecords<StockProductRow>(
+        session,
+        'product.product',
+        [['id', 'in', missingDemandIds]],
+        ['id', 'name', 'qty_available'],
+        { limit: missingDemandIds.length },
+      );
+      for (const row of extra) {
+        stockByProductId.set(row.id, Number(row.qty_available) || 0);
+      }
+    }
+
+    highestDemandProducts = topDemandCandidates.map(row => {
+      const idNum = Number(row.id);
+      return {
+        id: row.id,
+        name: row.name,
+        demandQty: row.qty,
+        onHand: stockByProductId.get(idNum) ?? 0,
+        revenue: row.revenue,
+      };
+    });
+  } catch (error) {
+    console.warn(
+      '[insights] Stock on-hand enrichment failed:',
+      error instanceof Error ? error.message : error,
+    );
+    highestDemandProducts = topDemandCandidates.map(row => ({
+      id: row.id,
+      name: row.name,
+      demandQty: row.qty,
+      onHand: 0,
+      revenue: row.revenue,
+    }));
+  }
+
   const recentOrders = saleOrders.slice(0, 8).map(order => ({
     id: String(order.id),
     number: String(order.name || ''),
@@ -3105,6 +3213,8 @@ export async function fetchOverviewInsights(
     areaChart,
     topProducts,
     bottomProducts,
+    lowestOnHandProducts,
+    highestDemandProducts,
     topSpendingCustomers,
     recentOrders,
     recentPurchaseOrders,
