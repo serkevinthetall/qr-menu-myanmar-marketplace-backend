@@ -2713,12 +2713,26 @@ export async function fetchOverviewInsights(
     ['date_order', '<', prevToStr],
   ];
 
+  const purchaseDomain: unknown[] = [
+    ['state', 'in', ['purchase', 'done']],
+    ['date_order', '>=', fromStr],
+    ['date_order', '<', toStr],
+  ];
+  const prevPurchaseDomain: unknown[] = [
+    ['state', 'in', ['purchase', 'done']],
+    ['date_order', '>=', prevFromStr],
+    ['date_order', '<', prevToStr],
+  ];
+
   const [
     saleOrders,
     prevSaleOrders,
-    customerCount,
-    openQuotationCount,
-    activeMembershipCount,
+    purchaseOrders,
+    prevPurchaseOrders,
+    quotationCount,
+    prevQuotationCount,
+    membershipCount,
+    prevMembershipCount,
   ] = await Promise.all([
     searchReadOdooRecords<OdooSaleOrder>(
       session,
@@ -2731,29 +2745,66 @@ export async function fetchOverviewInsights(
       session,
       'sale.order',
       prevSaleDomain,
+      ['id', 'amount_total', 'partner_id'],
+      { limit: 1000 },
+    ),
+    searchReadOdooRecords<OdooPurchaseOrder>(
+      session,
+      'purchase.order',
+      purchaseDomain,
+      PURCHASE_ORDER_LIST_FIELDS,
+      { order: 'date_order desc, id desc', limit: 1000 },
+    ),
+    searchReadOdooRecords<OdooPurchaseOrder>(
+      session,
+      'purchase.order',
+      prevPurchaseDomain,
       ['id', 'amount_total'],
       { limit: 1000 },
     ),
-    odooCallKw<number>(session.cookie, 'res.partner', 'search_count', [
-      [['customer_rank', '>', 0]],
+    odooCallKw<number>(session.cookie, 'sale.order', 'search_count', [
+      [
+        ['date_order', '>=', fromStr],
+        ['date_order', '<', toStr],
+        ['state', 'in', ['draft', 'sent', 'sale', 'done']],
+      ],
     ]),
     odooCallKw<number>(session.cookie, 'sale.order', 'search_count', [
-      [['state', 'in', ['draft', 'sent']]],
+      [
+        ['date_order', '>=', prevFromStr],
+        ['date_order', '<', prevToStr],
+        ['state', 'in', ['draft', 'sent', 'sale', 'done']],
+      ],
     ]),
     odooCallKw<number>(session.cookie, 'x_membership', 'search_count', [
-      [['x_studio_status', 'ilike', 'active']],
+      [
+        ['x_studio_start_date', '>=', fromStr.slice(0, 10)],
+        ['x_studio_start_date', '<', toStr.slice(0, 10)],
+      ],
     ]).catch(async () => {
-      // Fallback if ilike domain fails: load a page and count in memory.
       const rows = await searchReadOdooRecords<{
         id: number;
-        x_studio_status: string | false;
-      }>(session, 'x_membership', [], ['id', 'x_studio_status'], { limit: 500 });
-      return rows.filter(row =>
-        String(row.x_studio_status || '')
-          .toLowerCase()
-          .includes('active'),
-      ).length;
+        x_studio_start_date: string | false;
+      }>(
+        session,
+        'x_membership',
+        [],
+        ['id', 'x_studio_start_date'],
+        { limit: 500 },
+      );
+      const fromDay = fromStr.slice(0, 10);
+      const toDay = toStr.slice(0, 10);
+      return rows.filter(row => {
+        const start = String(row.x_studio_start_date || '').slice(0, 10);
+        return start >= fromDay && start < toDay;
+      }).length;
     }),
+    odooCallKw<number>(session.cookie, 'x_membership', 'search_count', [
+      [
+        ['x_studio_start_date', '>=', prevFromStr.slice(0, 10)],
+        ['x_studio_start_date', '<', prevToStr.slice(0, 10)],
+      ],
+    ]).catch(() => 0),
   ]);
 
   const saleAmount = sumOrders(saleOrders);
@@ -2764,16 +2815,34 @@ export async function fetchOverviewInsights(
   const prevAvg =
     prevOrderCount > 0 ? prevSaleAmount / prevOrderCount : 0;
 
-  // Partner areas for current-period orders
-  const partnerIds = Array.from(
-    new Set(
-      saleOrders
-        .map(order =>
-          Array.isArray(order.partner_id) ? Number(order.partner_id[0]) : 0,
-        )
-        .filter(id => id > 0),
-    ),
+  const purchaseAmount = purchaseOrders.reduce(
+    (sum, order) => sum + (Number(order.amount_total) || 0),
+    0,
   );
+  const prevPurchaseAmount = prevPurchaseOrders.reduce(
+    (sum, order) => sum + (Number(order.amount_total) || 0),
+    0,
+  );
+  const purchaseOrderCount = purchaseOrders.length;
+  const prevPurchaseOrderCount = prevPurchaseOrders.length;
+
+  const buyingCustomerIds = new Set(
+    saleOrders
+      .map(order =>
+        Array.isArray(order.partner_id) ? Number(order.partner_id[0]) : 0,
+      )
+      .filter(id => id > 0),
+  );
+  const prevBuyingCustomerIds = new Set(
+    (prevSaleOrders as OdooSaleOrder[])
+      .map(order =>
+        Array.isArray(order.partner_id) ? Number(order.partner_id[0]) : 0,
+      )
+      .filter(id => id > 0),
+  );
+
+  // Partner areas for current-period orders
+  const partnerIds = Array.from(buyingCustomerIds);
 
   let partners: OverviewPartnerRow[] = [];
   if (partnerIds.length > 0) {
@@ -2840,6 +2909,7 @@ export async function fetchOverviewInsights(
     string,
     { id: string; name: string; revenue: number; qty: number }
   >();
+  let itemsSold = 0;
 
   if (orderIds.length > 0) {
     const chunkSize = 200;
@@ -2883,6 +2953,8 @@ export async function fetchOverviewInsights(
         const productName = Array.isArray(line.product_id)
           ? String(line.product_id[1] || '').trim()
           : '';
+        const qty = Number(line.product_uom_qty) || 0;
+        itemsSold += qty;
         if (!productId || !productName) {
           continue;
         }
@@ -2893,7 +2965,7 @@ export async function fetchOverviewInsights(
           qty: 0,
         };
         existing.revenue += Number(line.price_subtotal) || 0;
-        existing.qty += Number(line.product_uom_qty) || 0;
+        existing.qty += qty;
         productTotals.set(productId, existing);
       }
     }
@@ -2951,6 +3023,17 @@ export async function fetchOverviewInsights(
     .sort((a, b) => b.total - a.total)
     .slice(0, 5);
 
+  const recentPurchaseOrders = purchaseOrders.slice(0, 8).map(order => ({
+    id: String(order.id),
+    number: String(order.name || ''),
+    vendor: Array.isArray(order.partner_id)
+      ? String(order.partner_id[1] || '')
+      : '',
+    total: Number(order.amount_total) || 0,
+    orderDate: String(order.date_order || ''),
+    status: String(order.state || ''),
+  }));
+
   return {
     period,
     range: {
@@ -2966,21 +3049,57 @@ export async function fetchOverviewInsights(
         value: orderCount,
         trend: trendPercent(orderCount, prevOrderCount),
       },
-      totalCustomers: {
-        value: Number(customerCount) || 0,
-        trend: 0,
+      buyingCustomers: {
+        value: buyingCustomerIds.size,
+        trend: trendPercent(
+          buyingCustomerIds.size,
+          prevBuyingCustomerIds.size,
+        ),
       },
-      openQuotations: {
-        value: Number(openQuotationCount) || 0,
-        trend: 0,
+      quotations: {
+        value: Number(quotationCount) || 0,
+        trend: trendPercent(
+          Number(quotationCount) || 0,
+          Number(prevQuotationCount) || 0,
+        ),
       },
-      activeMemberships: {
-        value: Number(activeMembershipCount) || 0,
+      itemsSold: {
+        value: itemsSold,
         trend: 0,
       },
       avgOrderValue: {
         value: avgOrderValue,
         trend: trendPercent(avgOrderValue, prevAvg),
+      },
+      purchaseAmount: {
+        value: purchaseAmount,
+        trend: trendPercent(purchaseAmount, prevPurchaseAmount),
+      },
+      purchaseOrders: {
+        value: purchaseOrderCount,
+        trend: trendPercent(purchaseOrderCount, prevPurchaseOrderCount),
+      },
+      // Kept for older clients; same period window as quotations / buying customers.
+      totalCustomers: {
+        value: buyingCustomerIds.size,
+        trend: trendPercent(
+          buyingCustomerIds.size,
+          prevBuyingCustomerIds.size,
+        ),
+      },
+      openQuotations: {
+        value: Number(quotationCount) || 0,
+        trend: trendPercent(
+          Number(quotationCount) || 0,
+          Number(prevQuotationCount) || 0,
+        ),
+      },
+      activeMemberships: {
+        value: Number(membershipCount) || 0,
+        trend: trendPercent(
+          Number(membershipCount) || 0,
+          Number(prevMembershipCount) || 0,
+        ),
       },
     },
     areaChart,
@@ -2988,5 +3107,6 @@ export async function fetchOverviewInsights(
     bottomProducts,
     topSpendingCustomers,
     recentOrders,
+    recentPurchaseOrders,
   };
 }
