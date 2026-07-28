@@ -2919,6 +2919,38 @@ export async function fetchOverviewInsights(
     status: String(order.state || ''),
   }));
 
+  const customerSpend = new Map<
+    string,
+    { id: string; name: string; total: number; orders: number }
+  >();
+  for (const order of saleOrders) {
+    const id = Array.isArray(order.partner_id)
+      ? String(order.partner_id[0] || '')
+      : '';
+    const name = Array.isArray(order.partner_id)
+      ? String(order.partner_id[1] || '').trim()
+      : '';
+    if (!id) {
+      continue;
+    }
+    const existing = customerSpend.get(id) || {
+      id,
+      name: name || 'Unknown customer',
+      total: 0,
+      orders: 0,
+    };
+    existing.total += Number(order.amount_total) || 0;
+    existing.orders += 1;
+    if (name) {
+      existing.name = name;
+    }
+    customerSpend.set(id, existing);
+  }
+
+  const topSpendingCustomers = [...customerSpend.values()]
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
+
   return {
     period,
     range: {
@@ -2954,6 +2986,7 @@ export async function fetchOverviewInsights(
     areaChart,
     topProducts,
     bottomProducts,
+    topSpendingCustomers,
     recentOrders,
   };
 }
