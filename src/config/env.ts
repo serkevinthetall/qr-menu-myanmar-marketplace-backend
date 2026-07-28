@@ -92,4 +92,12 @@ export const env = {
     .filter(Boolean),
   /** Technical name of the custom Odoo Township model (Studio). */
   odooTownshipModel: (process.env.ODOO_TOWNSHIP_MODEL ?? 'x_townships').trim(),
+
+  /**
+   * Optional Groq AI suggestions for Overview.
+   * Set AI_INSIGHTS_ENABLED=false (or omit) to fully disable — easy to remove later.
+   */
+  aiInsightsEnabled: (process.env.AI_INSIGHTS_ENABLED ?? 'false').toLowerCase() === 'true',
+  groqApiKey: process.env.GROQ_API_KEY ?? '',
+  groqModel: (process.env.GROQ_MODEL ?? 'llama-3.1-8b-instant').trim(),
 };
