@@ -2653,8 +2653,11 @@ export async function fetchOdooOnlineOrders(
       ? Math.floor(options.offset)
       : 0;
 
-  // All sale.order states for this salesperson (quotations + confirmed).
-  const domain: unknown[] = [['user_id', '=', salespersonId]];
+  // App Order = quotations in "Quotation Sent" for this salesperson.
+  const domain: unknown[] = [
+    ['user_id', '=', salespersonId],
+    ['state', '=', 'sent'],
+  ];
   const q = options?.q?.trim();
   if (q) {
     domain.push('|');
@@ -2692,6 +2695,11 @@ export async function fetchOdooOnlineOrderDetailBundle(
   }
 
   if (saleOrderSalespersonId(saleOrder) !== salespersonId) {
+    return null;
+  }
+
+  // App Order detail is limited to Quotation Sent only.
+  if (String(saleOrder.state || '') !== 'sent') {
     return null;
   }
 
