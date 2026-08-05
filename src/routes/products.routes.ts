@@ -33,8 +33,14 @@ router.get('/', async (req: AuthRequest, res) => {
     const offsetRaw = Number(req.query.offset);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+    const filterRaw = String(req.query.filter ?? '').trim();
+    const filter = filterRaw === 'qrApp' ? 'qrApp' : undefined;
 
-    const products = await fetchOdooProducts(req.user!.id, { limit, offset });
+    const products = await fetchOdooProducts(req.user!.id, {
+      limit,
+      offset,
+      filter,
+    });
 
     const data = products.map(product => ({
       id: String(product.id),
@@ -57,6 +63,7 @@ router.get('/', async (req: AuthRequest, res) => {
         offset,
         count: data.length,
         hasMore: data.length >= effectiveLimit,
+        filter: filter ?? null,
       },
     });
   } catch (error) {

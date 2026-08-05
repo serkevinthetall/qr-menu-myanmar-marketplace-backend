@@ -42,7 +42,7 @@ router.get('/', async (req: AuthRequest, res) => {
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : 'Failed to load online orders.';
+      error instanceof Error ? error.message : 'Failed to load app orders.';
     console.error('[online-orders]', message);
     return res.status(500).json({ message });
   }
@@ -51,7 +51,7 @@ router.get('/', async (req: AuthRequest, res) => {
 router.get('/:id', async (req: AuthRequest, res) => {
   const saleOrderId = Number(req.params.id);
   if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
-    return res.status(400).json({ message: 'Invalid online order id.' });
+    return res.status(400).json({ message: 'Invalid app order id.' });
   }
 
   try {
@@ -60,7 +60,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
       saleOrderId,
     );
     if (!bundle) {
-      return res.status(404).json({ message: 'Online order not found.' });
+      return res.status(404).json({ message: 'App order not found.' });
     }
 
     return res.json({
@@ -68,7 +68,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : 'Failed to load online order.';
+      error instanceof Error ? error.message : 'Failed to load app order.';
     console.error('[online-orders]', message);
     return res.status(500).json({ message });
   }

@@ -274,6 +274,11 @@ export async function fetchOdooProducts(
     q?: string;
     /** Exact match on product category display name. */
     category?: string;
+    /**
+     * QR App catalog: Sales ticked, Published on, Tags contain "QR App".
+     * product.template fields via product.product relations.
+     */
+    filter?: 'qrApp';
   },
 ): Promise<OdooProduct[]> {
   const session = getOdooSession(userId);
@@ -295,6 +300,13 @@ export async function fetchOdooProducts(
   const category = String(options?.category ?? '').trim();
 
   const domain: unknown[] = [['active', '=', true]];
+  if (options?.filter === 'qrApp') {
+    // sale_ok / website_published / product_tag_ids live on product.template;
+    // use template paths so product.product search_read stays reliable.
+    domain.push(['sale_ok', '=', true]);
+    domain.push(['product_tmpl_id.website_published', '=', true]);
+    domain.push(['product_tmpl_id.product_tag_ids.name', 'ilike', 'QR App']);
+  }
   if (q) {
     domain.push('|');
     domain.push(['name', 'ilike', q]);
@@ -304,42 +316,64 @@ export async function fetchOdooProducts(
     domain.push(['categ_id.name', '=', category]);
   }
 
-  const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Cookie: session.cookie,
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'call',
-      params: {
-        model: 'product.product',
-        method: 'search_read',
-        args: [
-          domain,
-          [
-            'id',
-            'name',
-            'default_code',
-            'list_price',
-            'active',
-            'categ_id',
-            'uom_id',
-          ],
-        ],
-        kwargs: {
-          order: 'name asc',
-          // Avoid image_128 (huge payload) and qty_available (slow computed field).
-          limit,
-          offset,
-        },
-      },
-      id: Date.now(),
-    }),
-  });
+  const fields = [
+    'id',
+    'name',
+    'default_code',
+    'list_price',
+    'active',
+    'categ_id',
+    'uom_id',
+  ];
 
-  const data = (await response.json()) as JsonRpcResponse<OdooProduct[]>;
+  const callSearchRead = async (searchDomain: unknown[]) => {
+    const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: session.cookie,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          model: 'product.product',
+          method: 'search_read',
+          args: [searchDomain, fields],
+          kwargs: {
+            order: 'name asc',
+            // Avoid image_128 (huge payload) and qty_available (slow computed field).
+            limit,
+            offset,
+          },
+        },
+        id: Date.now(),
+      }),
+    });
+
+    return (await response.json()) as JsonRpcResponse<OdooProduct[]>;
+  };
+
+  let data = await callSearchRead(domain);
+
+  // Fallback when website_published / tags are directly on product.product.
+  if (data.error && options?.filter === 'qrApp') {
+    const fallbackDomain: unknown[] = [
+      ['active', '=', true],
+      ['sale_ok', '=', true],
+      ['website_published', '=', true],
+      ['product_tag_ids.name', 'ilike', 'QR App'],
+    ];
+    if (q) {
+      fallbackDomain.push('|');
+      fallbackDomain.push(['name', 'ilike', q]);
+      fallbackDomain.push(['default_code', 'ilike', q]);
+    }
+    if (category) {
+      fallbackDomain.push(['categ_id.name', '=', category]);
+    }
+    data = await callSearchRead(fallbackDomain);
+  }
 
   if (data.error) {
     const message =
@@ -2550,7 +2584,7 @@ export async function fetchOdooSaleOrderDetailBundle(
   return { saleOrder, lines };
 }
 
-/* ─── Online Order (sale.order for salesperson Aung Soe Oo) ─── */
+/* ─── App Order (sale.order for salesperson Aung Soe Oo) ─── */
 
 const ONLINE_ORDER_SALESPERSON_NAME = 'Aung Soe Oo';
 
@@ -2587,7 +2621,7 @@ async function resolveOnlineOrderSalespersonUserId(
   const match = exact ?? rows[0];
   if (!match?.id) {
     throw new Error(
-      `Online Order salesperson not found in Odoo (res.users name: "${ONLINE_ORDER_SALESPERSON_NAME}").`,
+      `App Order salesperson not found in Odoo (res.users name: "${ONLINE_ORDER_SALESPERSON_NAME}").`,
     );
   }
 
