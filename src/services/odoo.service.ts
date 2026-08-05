@@ -2550,6 +2550,121 @@ export async function fetchOdooSaleOrderDetailBundle(
   return { saleOrder, lines };
 }
 
+/* ─── Online Order (sale.order for salesperson Aung Soe Oo) ─── */
+
+const ONLINE_ORDER_SALESPERSON_NAME = 'Aung Soe Oo';
+
+type OdooResUserRow = {
+  id: number;
+  name: string;
+};
+
+let cachedOnlineOrderSalespersonId: number | null = null;
+
+async function resolveOnlineOrderSalespersonUserId(
+  session: { cookie: string; uid: number },
+): Promise<number> {
+  if (cachedOnlineOrderSalespersonId) {
+    return cachedOnlineOrderSalespersonId;
+  }
+
+  const rows = await searchReadOdooRecords<OdooResUserRow>(
+    session,
+    'res.users',
+    [
+      ['name', 'ilike', ONLINE_ORDER_SALESPERSON_NAME],
+      ['share', '=', false],
+      ['active', '=', true],
+    ],
+    ['id', 'name'],
+    { limit: 10, order: 'id asc' },
+  );
+
+  const needle = ONLINE_ORDER_SALESPERSON_NAME.toLowerCase();
+  const exact = rows.find(
+    row => String(row.name || '').trim().toLowerCase() === needle,
+  );
+  const match = exact ?? rows[0];
+  if (!match?.id) {
+    throw new Error(
+      `Online Order salesperson not found in Odoo (res.users name: "${ONLINE_ORDER_SALESPERSON_NAME}").`,
+    );
+  }
+
+  cachedOnlineOrderSalespersonId = match.id;
+  return match.id;
+}
+
+function saleOrderSalespersonId(order: OdooSaleOrder | OdooSaleOrderDetail): number {
+  return Array.isArray(order.user_id) ? Number(order.user_id[0]) || 0 : 0;
+}
+
+export async function fetchOdooOnlineOrders(
+  userId: string,
+  options?: { limit?: number; offset?: number; q?: string },
+): Promise<OdooSaleOrder[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const salespersonId = await resolveOnlineOrderSalespersonUserId(session);
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  // All sale.order states for this salesperson (quotations + confirmed).
+  const domain: unknown[] = [['user_id', '=', salespersonId]];
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push('|');
+    domain.push('|');
+    domain.push(['name', 'ilike', q]);
+    domain.push(['partner_id', 'ilike', q]);
+    domain.push(['client_order_ref', 'ilike', q]);
+  }
+
+  return searchReadOdooRecords<OdooSaleOrder>(
+    session,
+    'sale.order',
+    domain,
+    SALE_ORDER_LIST_FIELDS,
+    { order: 'date_order desc, id desc', limit, offset },
+  );
+}
+
+export async function fetchOdooOnlineOrderDetailBundle(
+  userId: string,
+  saleOrderId: number,
+): Promise<{
+  saleOrder: OdooSaleOrderDetail;
+  lines: OdooSaleOrderLine[];
+} | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const salespersonId = await resolveOnlineOrderSalespersonUserId(session);
+  const saleOrder = await fetchOdooSaleOrderById(userId, saleOrderId);
+  if (!saleOrder) {
+    return null;
+  }
+
+  if (saleOrderSalespersonId(saleOrder) !== salespersonId) {
+    return null;
+  }
+
+  const lines = await fetchOdooSaleOrderLines(userId, saleOrderId);
+  return { saleOrder, lines };
+}
+
 /* ─── Overview / Insights dashboard ─── */
 
 export type OverviewPeriod = 'day' | 'week' | 'month';
