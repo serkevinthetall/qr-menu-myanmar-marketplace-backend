@@ -2584,54 +2584,7 @@ export async function fetchOdooSaleOrderDetailBundle(
   return { saleOrder, lines };
 }
 
-/* ─── App Order (sale.order for salesperson Aung Soe Oo) ─── */
-
-const ONLINE_ORDER_SALESPERSON_NAME = 'Aung Soe Oo';
-
-type OdooResUserRow = {
-  id: number;
-  name: string;
-};
-
-let cachedOnlineOrderSalespersonId: number | null = null;
-
-async function resolveOnlineOrderSalespersonUserId(
-  session: { cookie: string; uid: number },
-): Promise<number> {
-  if (cachedOnlineOrderSalespersonId) {
-    return cachedOnlineOrderSalespersonId;
-  }
-
-  const rows = await searchReadOdooRecords<OdooResUserRow>(
-    session,
-    'res.users',
-    [
-      ['name', 'ilike', ONLINE_ORDER_SALESPERSON_NAME],
-      ['share', '=', false],
-      ['active', '=', true],
-    ],
-    ['id', 'name'],
-    { limit: 10, order: 'id asc' },
-  );
-
-  const needle = ONLINE_ORDER_SALESPERSON_NAME.toLowerCase();
-  const exact = rows.find(
-    row => String(row.name || '').trim().toLowerCase() === needle,
-  );
-  const match = exact ?? rows[0];
-  if (!match?.id) {
-    throw new Error(
-      `App Order salesperson not found in Odoo (res.users name: "${ONLINE_ORDER_SALESPERSON_NAME}").`,
-    );
-  }
-
-  cachedOnlineOrderSalespersonId = match.id;
-  return match.id;
-}
-
-function saleOrderSalespersonId(order: OdooSaleOrder | OdooSaleOrderDetail): number {
-  return Array.isArray(order.user_id) ? Number(order.user_id[0]) || 0 : 0;
-}
+/* ─── App Order (sale.order in Quotation Sent) ─── */
 
 export async function fetchOdooOnlineOrders(
   userId: string,
@@ -2642,8 +2595,6 @@ export async function fetchOdooOnlineOrders(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  const salespersonId = await resolveOnlineOrderSalespersonUserId(session);
-
   const limit =
     options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
       ? Math.min(Math.floor(options.limit), 500)
@@ -2653,11 +2604,8 @@ export async function fetchOdooOnlineOrders(
       ? Math.floor(options.offset)
       : 0;
 
-  // App Order = quotations in "Quotation Sent" for this salesperson.
-  const domain: unknown[] = [
-    ['user_id', '=', salespersonId],
-    ['state', '=', 'sent'],
-  ];
+  // App Order = all quotations in "Quotation Sent" (any salesperson).
+  const domain: unknown[] = [['state', '=', 'sent']];
   const q = options?.q?.trim();
   if (q) {
     domain.push('|');
@@ -2688,13 +2636,8 @@ export async function fetchOdooOnlineOrderDetailBundle(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  const salespersonId = await resolveOnlineOrderSalespersonUserId(session);
   const saleOrder = await fetchOdooSaleOrderById(userId, saleOrderId);
   if (!saleOrder) {
-    return null;
-  }
-
-  if (saleOrderSalespersonId(saleOrder) !== salespersonId) {
     return null;
   }
 
