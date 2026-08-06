@@ -39,6 +39,10 @@ export function mapSaleOrderDetail(input: {
     commitmentDate: toStringValue(saleOrder.commitment_date),
     customerReference: toStringValue(saleOrder.client_order_ref),
     deliveryAddress: toRelationName(saleOrder.partner_shipping_id),
+    preferredDeliveryDate: toStringValue(
+      saleOrder.x_studio_preferred_delivery_date,
+    ),
+    deliveryNotes: toStringValue(saleOrder.x_studio_delivery_notes),
     lines: lines.map(line => ({
       id: String(line.id),
       productId: String(toRelationId(line.product_id) || ''),
