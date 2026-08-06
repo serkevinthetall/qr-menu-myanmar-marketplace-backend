@@ -2661,8 +2661,6 @@ export type OdooSaleOrderDetail = OdooSaleOrder & {
   commitment_date: string | false;
   client_order_ref: string | false;
   partner_shipping_id: [number, string] | false;
-  /** Odoo Customer Notes / Terms (`note`). */
-  note?: string | false;
   x_studio_preferred_delivery_date?: string | false;
   x_studio_delivery_notes?: string | false;
 };
@@ -2697,7 +2695,6 @@ const SALE_ORDER_DETAIL_FIELDS = [
   'commitment_date',
   'client_order_ref',
   'partner_shipping_id',
-  'note',
   'x_studio_preferred_delivery_date',
   'x_studio_delivery_notes',
 ];

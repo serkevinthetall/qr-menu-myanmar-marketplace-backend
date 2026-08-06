@@ -11,41 +11,6 @@ import {
   toStudioPhoneNumber,
 } from './quotation-mapper.js';
 
-/** Strip HTML from Odoo html/char notes for ERP display. */
-function htmlToPlainText(value: string): string {
-  return value
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/\s*p\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-/**
- * Odoo sale.order `note` is often Terms & Conditions HTML — hide that boilerplate
- * so Customer Note only shows real free-text notes.
- */
-function toCustomerNote(raw: unknown): string {
-  const plain = htmlToPlainText(toStringValue(raw));
-  if (!plain) return '';
-  const lower = plain.toLowerCase();
-  const looksLikeTerms =
-    lower.includes('terms') &&
-    lower.includes('condition') &&
-    (lower.includes('ezytoshop.com/terms') ||
-      lower.includes('http://') ||
-      lower.includes('https://'));
-  if (looksLikeTerms) return '';
-  return plain;
-}
-
 export function mapSaleOrderSummary(order: OdooSaleOrder) {
   return {
     id: String(order.id),
@@ -79,7 +44,6 @@ export function mapSaleOrderDetail(input: {
     preferredDeliveryDate:
       toStringValue(saleOrder.x_studio_preferred_delivery_date) ||
       toStringValue(saleOrder.commitment_date),
-    customerNote: toCustomerNote(saleOrder.note),
     deliveryNotes: toStringValue(saleOrder.x_studio_delivery_notes),
     lines: lines.map(line => ({
       id: String(line.id),
