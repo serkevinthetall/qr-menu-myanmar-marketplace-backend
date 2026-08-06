@@ -2651,6 +2651,8 @@ export type OdooSaleOrder = {
   x_studio_phonenumber_1?: string | false;
   x_studio_phonenumber?: string | false;
   x_studio_sale_person_name?: string | false;
+  /** Studio many2one Salesperson (`res.users`) — used for App Order matching. */
+  x_studio_salesperson?: [number, string] | false;
 };
 
 export type OdooSaleOrderDetail = OdooSaleOrder & {
@@ -2685,6 +2687,7 @@ const SALE_ORDER_LIST_FIELDS = [
   'x_studio_phonenumber_1',
   'x_studio_phonenumber',
   'x_studio_sale_person_name',
+  'x_studio_salesperson',
 ];
 
 const SALE_ORDER_DETAIL_FIELDS = [
@@ -2862,7 +2865,82 @@ export async function fetchOdooSaleOrderDetailBundle(
   return { saleOrder, lines };
 }
 
-/* ─── App Order (sale.order in Quotation Sent) ─── */
+/* ─── App Order (Quotation Sent OR Studio Salesperson = Administrator) ─── */
+
+let cachedAdministratorUserId: number | null | undefined;
+
+/** Resolve Odoo res.users id for Administrator (Studio x_studio_salesperson). */
+async function resolveAdministratorUserId(
+  session: { cookie: string; uid: number },
+): Promise<number | null> {
+  if (cachedAdministratorUserId !== undefined) {
+    return cachedAdministratorUserId;
+  }
+
+  try {
+    const rows = await odooCallKw<{ id: number; name?: string; login?: string }[]>(
+      session.cookie,
+      'res.users',
+      'search_read',
+      [
+        [
+          '|',
+          ['login', '=', 'admin'],
+          ['name', '=ilike', 'Administrator'],
+        ],
+        ['id', 'name', 'login'],
+      ],
+      { order: 'id asc', limit: 5 },
+    );
+
+    const preferred =
+      rows?.find(row => String(row.login || '').toLowerCase() === 'admin') ??
+      rows?.find(
+        row => String(row.name || '').toLowerCase() === 'administrator',
+      ) ??
+      rows?.[0];
+
+    cachedAdministratorUserId =
+      preferred && Number.isFinite(preferred.id) ? preferred.id : null;
+  } catch (error) {
+    console.warn(
+      '[online-orders] Could not resolve Administrator user:',
+      error instanceof Error ? error.message : error,
+    );
+    cachedAdministratorUserId = null;
+  }
+
+  return cachedAdministratorUserId;
+}
+
+function isAppOrderSalespersonAdministrator(
+  order: {
+    x_studio_salesperson?: [number, string] | false;
+  },
+  administratorUserId: number | null,
+): boolean {
+  const rel = order.x_studio_salesperson;
+  if (!Array.isArray(rel) || typeof rel[0] !== 'number') {
+    return false;
+  }
+  if (administratorUserId !== null && rel[0] === administratorUserId) {
+    return true;
+  }
+  return String(rel[1] || '').trim().toLowerCase() === 'administrator';
+}
+
+function buildAppOrderDomain(administratorUserId: number | null): unknown[] {
+  // Either Quotation Sent OR Studio Salesperson = Administrator.
+  if (administratorUserId !== null) {
+    return [
+      '|',
+      ['state', '=', 'sent'],
+      ['x_studio_salesperson', '=', administratorUserId],
+    ];
+  }
+  // Fallback when Administrator user cannot be resolved.
+  return [['state', '=', 'sent']];
+}
 
 export async function fetchOdooOnlineOrders(
   userId: string,
@@ -2882,8 +2960,8 @@ export async function fetchOdooOnlineOrders(
       ? Math.floor(options.offset)
       : 0;
 
-  // App Order = all quotations in "Quotation Sent" (any salesperson).
-  const domain: unknown[] = [['state', '=', 'sent']];
+  const administratorUserId = await resolveAdministratorUserId(session);
+  const domain = buildAppOrderDomain(administratorUserId);
   const q = options?.q?.trim();
   if (q) {
     domain.push('|');
@@ -2897,13 +2975,47 @@ export async function fetchOdooOnlineOrders(
     domain.push(['x_studio_sale_person_name', 'ilike', q]);
   }
 
-  return searchReadOdooRecords<OdooSaleOrder>(
-    session,
-    'sale.order',
-    domain,
-    SALE_ORDER_LIST_FIELDS,
-    { order: 'date_order desc, id desc', limit, offset },
-  );
+  try {
+    return await searchReadOdooRecords<OdooSaleOrder>(
+      session,
+      'sale.order',
+      domain,
+      SALE_ORDER_LIST_FIELDS,
+      { order: 'date_order desc, id desc', limit, offset },
+    );
+  } catch (error) {
+    // Older DBs may lack x_studio_salesperson — fall back to Quotation Sent only.
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      message.toLowerCase().includes('x_studio_salesperson') ||
+      message.toLowerCase().includes('invalid field')
+    ) {
+      console.warn(
+        '[online-orders] x_studio_salesperson unavailable, using state=sent only:',
+        message,
+      );
+      const fallbackDomain: unknown[] = [['state', '=', 'sent']];
+      if (q) {
+        fallbackDomain.push('|');
+        fallbackDomain.push('|');
+        fallbackDomain.push('|');
+        fallbackDomain.push('|');
+        fallbackDomain.push(['name', 'ilike', q]);
+        fallbackDomain.push(['partner_id', 'ilike', q]);
+        fallbackDomain.push(['client_order_ref', 'ilike', q]);
+        fallbackDomain.push(['x_studio_phonenumber_1', 'ilike', q]);
+        fallbackDomain.push(['x_studio_sale_person_name', 'ilike', q]);
+      }
+      return searchReadOdooRecords<OdooSaleOrder>(
+        session,
+        'sale.order',
+        fallbackDomain,
+        SALE_ORDER_LIST_FIELDS.filter(f => f !== 'x_studio_salesperson'),
+        { order: 'date_order desc, id desc', limit, offset },
+      );
+    }
+    throw error;
+  }
 }
 
 export async function fetchOdooOnlineOrderDetailBundle(
@@ -2923,8 +3035,13 @@ export async function fetchOdooOnlineOrderDetailBundle(
     return null;
   }
 
-  // App Order detail is limited to Quotation Sent only.
-  if (String(saleOrder.state || '') !== 'sent') {
+  const administratorUserId = await resolveAdministratorUserId(session);
+  const isQuotationSent = String(saleOrder.state || '') === 'sent';
+  const isAdminSalesperson = isAppOrderSalespersonAdministrator(
+    saleOrder,
+    administratorUserId,
+  );
+  if (!isQuotationSent && !isAdminSalesperson) {
     return null;
   }
 
