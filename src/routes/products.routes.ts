@@ -1,11 +1,17 @@
 import { Router } from 'express';
 
 import { authMiddleware } from '../middleware/auth.js';
+import { getOdooSession } from '../services/odoo-session.store.js';
 import {
   fetchOdooProductById,
   fetchOdooProducts,
+  resolveProductFavoriteField,
   updateOdooProductFavorite,
 } from '../services/odoo.service.js';
+import {
+  listStoredFavoriteProductIds,
+  setStoredProductFavorite,
+} from '../services/product-favorites.store.js';
 import { AuthRequest } from '../types/auth.js';
 import {
   toNumberValue,
@@ -28,9 +34,16 @@ function mapProductImage(image: string | false | undefined): string {
   return `data:image/png;base64,${raw}`;
 }
 
-/** Odoo priority Selection: '1' = favorite star, '0' = normal. */
-function isOdooFavorite(priority: string | false | undefined): boolean {
-  return String(priority ?? '0') === '1';
+async function favoriteForProduct(
+  userId: string,
+  productId: number,
+  odooFavorite: boolean | undefined,
+): Promise<boolean> {
+  if (typeof odooFavorite === 'boolean') {
+    return odooFavorite;
+  }
+  const stored = await listStoredFavoriteProductIds(userId);
+  return stored.has(productId);
 }
 
 router.get('/', async (req: AuthRequest, res) => {
@@ -48,19 +61,38 @@ router.get('/', async (req: AuthRequest, res) => {
       filter,
     });
 
-    const data = products.map(product => ({
-      id: String(product.id),
-      name: product.name,
-      sku: product.default_code || '',
-      price: product.list_price ?? 0,
-      stock: product.qty_available ?? 0,
-      active: product.active,
-      category: Array.isArray(product.categ_id) ? product.categ_id[1] : '',
-      // Images omitted on list fetch for speed; UI uses ProductThumb placeholder.
-      image: '',
-      unit: Array.isArray(product.uom_id) ? product.uom_id[1] : 'Units',
-      favorite: isOdooFavorite(product.priority),
-    }));
+    const session = getOdooSession(req.user!.id);
+    const odooField = session
+      ? await resolveProductFavoriteField(session)
+      : null;
+    const storedFavorites = odooField
+      ? null
+      : await listStoredFavoriteProductIds(req.user!.id);
+
+    const data = products.map(product => {
+      const favorite =
+        typeof product.__favorite === 'boolean'
+          ? product.__favorite
+          : Boolean(storedFavorites?.has(product.id));
+      return {
+        id: String(product.id),
+        name: product.name,
+        sku: product.default_code || '',
+        price: product.list_price ?? 0,
+        stock: product.qty_available ?? 0,
+        active: product.active,
+        category: Array.isArray(product.categ_id) ? product.categ_id[1] : '',
+        // Images omitted on list fetch for speed; UI uses ProductThumb placeholder.
+        image: '',
+        unit: Array.isArray(product.uom_id) ? product.uom_id[1] : 'Units',
+        favorite,
+      };
+    });
+
+    // Favorites first when using ERP store (Odoo field already sorts in search_read).
+    if (!odooField) {
+      data.sort((a, b) => Number(b.favorite) - Number(a.favorite));
+    }
 
     const effectiveLimit = limit ?? 500;
     return res.json({
@@ -92,6 +124,12 @@ router.get('/:id', async (req: AuthRequest, res) => {
       return res.status(404).json({ message: 'Product not found.' });
     }
 
+    const favorite = await favoriteForProduct(
+      req.user!.id,
+      product.id,
+      product.__favorite,
+    );
+
     return res.json({
       data: {
         id: String(product.id),
@@ -107,7 +145,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
         description: toStringValue(product.description_sale),
         type: toStringValue(product.type),
         image: mapProductImage(product.image_128),
-        favorite: isOdooFavorite(product.priority),
+        favorite,
       },
     });
   } catch (error) {
@@ -126,8 +164,21 @@ router.put('/:id/favorite', async (req: AuthRequest, res) => {
 
   const favorite = Boolean(req.body?.favorite);
   try {
-    await updateOdooProductFavorite(req.user!.id, productId, favorite);
-    return res.json({ data: { id: String(productId), favorite } });
+    const wroteToOdoo = await updateOdooProductFavorite(
+      req.user!.id,
+      productId,
+      favorite,
+    );
+    if (!wroteToOdoo) {
+      await setStoredProductFavorite(req.user!.id, productId, favorite);
+    }
+    return res.json({
+      data: {
+        id: String(productId),
+        favorite,
+        source: wroteToOdoo ? 'odoo' : 'erp',
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to update favorite.';

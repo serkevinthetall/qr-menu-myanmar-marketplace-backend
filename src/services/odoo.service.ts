@@ -37,8 +37,11 @@ export type OdooProduct = {
   categ_id: [number, string] | false;
   image_128?: string | false;
   uom_id: [number, string] | false;
-  /** Odoo favorite star: '0' normal, '1' favorite. */
-  priority?: string | false;
+  /**
+   * Optional favorite field value when present on this Odoo DB
+   * (priority / x_studio_favorite / …). Not standard on product.product.
+   */
+  __favorite?: boolean;
 };
 
 export type OdooProductDetail = OdooProduct & {
@@ -326,8 +329,13 @@ export async function fetchOdooProducts(
     'active',
     'categ_id',
     'uom_id',
-    'priority',
   ];
+
+  // Prefer an Odoo favorite field when this DB has one (not standard on product.product).
+  const favoriteField = await resolveProductFavoriteField(session);
+  if (favoriteField) {
+    fields.push(favoriteField.name);
+  }
 
   const callSearchRead = async (searchDomain: unknown[]) => {
     const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
@@ -344,8 +352,9 @@ export async function fetchOdooProducts(
           method: 'search_read',
           args: [searchDomain, fields],
           kwargs: {
-            // Favorites first (priority '1'), then name — same idea as Odoo.
-            order: 'priority desc, name asc',
+            order: favoriteField
+              ? `${favoriteField.name} desc, name asc`
+              : 'name asc',
             // Avoid image_128 (huge payload) and qty_available (slow computed field).
             limit,
             offset,
@@ -385,7 +394,18 @@ export async function fetchOdooProducts(
     throw new Error(message);
   }
 
-  return data.result ?? [];
+  const rows = data.result ?? [];
+  if (!favoriteField) {
+    return rows;
+  }
+
+  return rows.map(row => {
+    const raw = (row as Record<string, unknown>)[favoriteField.name];
+    return {
+      ...row,
+      __favorite: isFavoriteOdooValue(raw, favoriteField.kind),
+    };
+  });
 }
 
 const PRODUCT_DETAIL_FIELDS = [
@@ -402,7 +422,6 @@ const PRODUCT_DETAIL_FIELDS = [
   'type',
   'standard_price',
   'image_128',
-  'priority',
 ];
 
 const PRODUCT_DETAIL_FIELDS_MIN = [
@@ -413,7 +432,6 @@ const PRODUCT_DETAIL_FIELDS_MIN = [
   'active',
   'categ_id',
   'uom_id',
-  'priority',
 ];
 
 export async function fetchOdooProductById(
@@ -425,15 +443,32 @@ export async function fetchOdooProductById(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
+  const favoriteField = await resolveProductFavoriteField(session);
+  const detailFields = favoriteField
+    ? [...PRODUCT_DETAIL_FIELDS, favoriteField.name]
+    : PRODUCT_DETAIL_FIELDS;
+  const minFields = favoriteField
+    ? [...PRODUCT_DETAIL_FIELDS_MIN, favoriteField.name]
+    : PRODUCT_DETAIL_FIELDS_MIN;
+
+  const attachFavorite = (detail: OdooProductDetail | null): OdooProductDetail | null => {
+    if (!detail || !favoriteField) return detail;
+    const raw = (detail as Record<string, unknown>)[favoriteField.name];
+    return {
+      ...detail,
+      __favorite: isFavoriteOdooValue(raw, favoriteField.kind),
+    };
+  };
+
   try {
     const detail = await readOdooRecordAsUser<OdooProductDetail>(
       session,
       'product.product',
       productId,
-      PRODUCT_DETAIL_FIELDS,
+      detailFields,
     );
     if (detail) {
-      return detail;
+      return attachFavorite(detail);
     }
   } catch (error) {
     console.warn(
@@ -443,12 +478,13 @@ export async function fetchOdooProductById(
   }
 
   try {
-    return await readOdooRecordAsUser<OdooProductDetail>(
+    const detail = await readOdooRecordAsUser<OdooProductDetail>(
       session,
       'product.product',
       productId,
-      PRODUCT_DETAIL_FIELDS_MIN,
+      minFields,
     );
+    return attachFavorite(detail);
   } catch (error) {
     console.error(
       '[products] Failed to read product:',
@@ -460,20 +496,30 @@ export async function fetchOdooProductById(
   }
 }
 
-/** Toggle Odoo product favorite star (`priority`: '1' = favorite, '0' = normal). */
+/**
+ * Toggle product favorite.
+ * Uses an Odoo field when this DB has one; otherwise returns false so the
+ * caller can persist in the ERP favorites store.
+ */
 export async function updateOdooProductFavorite(
   userId: string,
   productId: number,
   favorite: boolean,
-): Promise<void> {
+): Promise<boolean> {
   const session = getOdooSession(userId);
   if (!session) {
     throw new Error('Odoo session expired. Please log in again.');
   }
 
+  const favoriteField = await resolveProductFavoriteField(session);
+  if (!favoriteField) {
+    return false;
+  }
+
   await writeOdooRecordAsUser(session, 'product.product', productId, {
-    priority: favorite ? '1' : '0',
+    [favoriteField.name]: odooValueFromFavorite(favorite, favoriteField.kind),
   });
+  return true;
 }
 
 export type OdooQuotation = {
@@ -681,6 +727,81 @@ async function writeOdooRecordAsUser(
   values: Record<string, unknown>,
 ): Promise<void> {
   await odooCallKw(session.cookie, model, 'write', [[recordId], values]);
+}
+
+type ProductFavoriteField = {
+  name: string;
+  kind: 'boolean' | 'selection';
+};
+
+const PRODUCT_FAVORITE_FIELD_CANDIDATES = [
+  'priority',
+  'x_studio_favorite',
+  'x_studio_priority',
+  'x_favorite',
+] as const;
+
+let cachedProductFavoriteField: ProductFavoriteField | null | undefined;
+
+function isFavoriteOdooValue(
+  value: unknown,
+  kind: ProductFavoriteField['kind'],
+): boolean {
+  if (kind === 'boolean') {
+    return Boolean(value);
+  }
+  return String(value ?? '0') === '1' || String(value ?? '') === 'true';
+}
+
+function odooValueFromFavorite(
+  favorite: boolean,
+  kind: ProductFavoriteField['kind'],
+): boolean | string {
+  return kind === 'boolean' ? favorite : favorite ? '1' : '0';
+}
+
+/**
+ * Detect a favorite/star field on product.product for this Odoo DB.
+ * Standard product.product has no priority — Studio may add one.
+ */
+export async function resolveProductFavoriteField(
+  session: { cookie: string; uid: number },
+): Promise<ProductFavoriteField | null> {
+  if (cachedProductFavoriteField !== undefined) {
+    return cachedProductFavoriteField;
+  }
+
+  try {
+    const fields = await odooCallKw<
+      Record<string, { type?: string; store?: boolean; readonly?: boolean }>
+    >(session.cookie, 'product.product', 'fields_get', [
+      [...PRODUCT_FAVORITE_FIELD_CANDIDATES],
+      ['type', 'store', 'readonly'],
+    ]);
+
+    for (const name of PRODUCT_FAVORITE_FIELD_CANDIDATES) {
+      const meta = fields?.[name];
+      if (!meta) continue;
+      if (meta.readonly) continue;
+      if (meta.store === false) continue;
+      if (meta.type === 'boolean') {
+        cachedProductFavoriteField = { name, kind: 'boolean' };
+        return cachedProductFavoriteField;
+      }
+      if (meta.type === 'selection') {
+        cachedProductFavoriteField = { name, kind: 'selection' };
+        return cachedProductFavoriteField;
+      }
+    }
+  } catch (error) {
+    console.warn(
+      '[products] Could not resolve favorite field:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  cachedProductFavoriteField = null;
+  return null;
 }
 
 /**
