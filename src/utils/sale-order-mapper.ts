@@ -39,9 +39,12 @@ export function mapSaleOrderDetail(input: {
     commitmentDate: toStringValue(saleOrder.commitment_date),
     customerReference: toStringValue(saleOrder.client_order_ref),
     deliveryAddress: toRelationName(saleOrder.partner_shipping_id),
-    preferredDeliveryDate: toStringValue(
-      saleOrder.x_studio_preferred_delivery_date,
-    ),
+    // Prefer Studio Preferred Delivery Date; fall back to Odoo commitment_date.
+    preferredDeliveryDate:
+      toStringValue(saleOrder.x_studio_preferred_delivery_date) ||
+      toStringValue(saleOrder.commitment_date),
+    /** Odoo Customer Notes (`note`) — replaces Customer Ref in the UI. */
+    customerNote: toStringValue(saleOrder.note),
     deliveryNotes: toStringValue(saleOrder.x_studio_delivery_notes),
     lines: lines.map(line => ({
       id: String(line.id),
