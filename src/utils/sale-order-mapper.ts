@@ -11,6 +11,41 @@ import {
   toStudioPhoneNumber,
 } from './quotation-mapper.js';
 
+/** Strip HTML from Odoo html/char notes for ERP display. */
+function htmlToPlainText(value: string): string {
+  return value
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/\s*p\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Odoo sale.order `note` is often Terms & Conditions HTML — hide that boilerplate
+ * so Customer Note only shows real free-text notes.
+ */
+function toCustomerNote(raw: unknown): string {
+  const plain = htmlToPlainText(toStringValue(raw));
+  if (!plain) return '';
+  const lower = plain.toLowerCase();
+  const looksLikeTerms =
+    lower.includes('terms') &&
+    lower.includes('condition') &&
+    (lower.includes('ezytoshop.com/terms') ||
+      lower.includes('http://') ||
+      lower.includes('https://'));
+  if (looksLikeTerms) return '';
+  return plain;
+}
+
 export function mapSaleOrderSummary(order: OdooSaleOrder) {
   return {
     id: String(order.id),
@@ -22,7 +57,10 @@ export function mapSaleOrderSummary(order: OdooSaleOrder) {
     status: toStringValue(order.state),
     salesperson: toRelationName(order.user_id),
     phoneNumber: toStudioPhoneNumber(order),
-    salePersonName: toStringValue(order.x_studio_sale_person_name),
+    // Prefer Studio Sale Person Name char; fall back to Studio Salesperson many2one.
+    salePersonName:
+      toStringValue(order.x_studio_sale_person_name) ||
+      toRelationName(order.x_studio_salesperson),
   };
 }
 
@@ -43,8 +81,7 @@ export function mapSaleOrderDetail(input: {
     preferredDeliveryDate:
       toStringValue(saleOrder.x_studio_preferred_delivery_date) ||
       toStringValue(saleOrder.commitment_date),
-    /** Odoo Customer Notes (`note`) — replaces Customer Ref in the UI. */
-    customerNote: toStringValue(saleOrder.note),
+    customerNote: toCustomerNote(saleOrder.note),
     deliveryNotes: toStringValue(saleOrder.x_studio_delivery_notes),
     lines: lines.map(line => ({
       id: String(line.id),
