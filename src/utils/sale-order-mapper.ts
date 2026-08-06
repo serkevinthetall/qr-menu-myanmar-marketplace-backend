@@ -57,10 +57,8 @@ export function mapSaleOrderSummary(order: OdooSaleOrder) {
     status: toStringValue(order.state),
     salesperson: toRelationName(order.user_id),
     phoneNumber: toStudioPhoneNumber(order),
-    // Prefer Studio Sale Person Name char; fall back to Studio Salesperson many2one.
-    salePersonName:
-      toStringValue(order.x_studio_sale_person_name) ||
-      toRelationName(order.x_studio_salesperson),
+    // Studio Sale Person Name only — do not fall back to user_id / x_studio_salesperson.
+    salePersonName: toStringValue(order.x_studio_sale_person_name),
   };
 }
 
