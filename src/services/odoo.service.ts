@@ -462,6 +462,9 @@ export type OdooQuotation = {
   amount_total: number;
   state: string;
   preferred_payment_method_line_id?: [number, string] | false;
+  x_studio_phonenumber?: string | false;
+  x_studio_phonenumber_1?: string | false;
+  x_studio_sale_person_name?: string | false;
 };
 
 export type OdooQuotationDetail = OdooQuotation & {
@@ -477,6 +480,7 @@ export type OdooQuotationDetail = OdooQuotation & {
   x_studio_membership_coupon_ticket: string | false;
   x_studio_membership_coupon_status: string | false;
   x_studio_phonenumber: string | false;
+  x_studio_phonenumber_1: string | false;
   x_studio_preferred_delivery_date: string | false;
   x_studio_delivery_notes: string | false;
   x_studio_sale_person_name: string | false;
@@ -524,6 +528,9 @@ const QUOTATION_LIST_FIELDS = [
   'amount_total',
   'state',
   'preferred_payment_method_line_id',
+  'x_studio_phonenumber_1',
+  'x_studio_phonenumber',
+  'x_studio_sale_person_name',
 ];
 
 const QUOTATION_DETAIL_FIELDS = [
@@ -539,10 +546,8 @@ const QUOTATION_DETAIL_FIELDS = [
   'preferred_payment_method_line_id',
   'x_studio_membership_coupon_ticket',
   'x_studio_membership_coupon_status',
-  'x_studio_phonenumber',
   'x_studio_preferred_delivery_date',
   'x_studio_delivery_notes',
-  'x_studio_sale_person_name',
   'commitment_date',
 ];
 
@@ -2383,6 +2388,9 @@ export type OdooSaleOrder = {
   amount_total: number;
   state: string;
   user_id: [number, string] | false;
+  x_studio_phonenumber_1?: string | false;
+  x_studio_phonenumber?: string | false;
+  x_studio_sale_person_name?: string | false;
 };
 
 export type OdooSaleOrderDetail = OdooSaleOrder & {
@@ -2410,6 +2418,9 @@ const SALE_ORDER_LIST_FIELDS = [
   'amount_total',
   'state',
   'user_id',
+  'x_studio_phonenumber_1',
+  'x_studio_phonenumber',
+  'x_studio_sale_person_name',
 ];
 
 const SALE_ORDER_DETAIL_FIELDS = [
@@ -2610,9 +2621,13 @@ export async function fetchOdooOnlineOrders(
   if (q) {
     domain.push('|');
     domain.push('|');
+    domain.push('|');
+    domain.push('|');
     domain.push(['name', 'ilike', q]);
     domain.push(['partner_id', 'ilike', q]);
     domain.push(['client_order_ref', 'ilike', q]);
+    domain.push(['x_studio_phonenumber_1', 'ilike', q]);
+    domain.push(['x_studio_sale_person_name', 'ilike', q]);
   }
 
   return searchReadOdooRecords<OdooSaleOrder>(

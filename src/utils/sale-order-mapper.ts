@@ -8,6 +8,7 @@ import {
   toRelationId,
   toRelationName,
   toStringValue,
+  toStudioPhoneNumber,
 } from './quotation-mapper.js';
 
 export function mapSaleOrderSummary(order: OdooSaleOrder) {
@@ -20,6 +21,8 @@ export function mapSaleOrderSummary(order: OdooSaleOrder) {
     total: toNumberValue(order.amount_total),
     status: toStringValue(order.state),
     salesperson: toRelationName(order.user_id),
+    phoneNumber: toStudioPhoneNumber(order),
+    salePersonName: toStringValue(order.x_studio_sale_person_name),
   };
 }
 

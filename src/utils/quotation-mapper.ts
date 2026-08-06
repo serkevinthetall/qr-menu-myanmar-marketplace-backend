@@ -33,6 +33,17 @@ export function toRelationId(value: unknown): number {
   return 0;
 }
 
+/** Prefer Studio Phonenumber (`x_studio_phonenumber_1`), then legacy studio phone. */
+export function toStudioPhoneNumber(record: {
+  x_studio_phonenumber_1?: unknown;
+  x_studio_phonenumber?: unknown;
+}): string {
+  return (
+    toStringValue(record.x_studio_phonenumber_1) ||
+    toStringValue(record.x_studio_phonenumber)
+  );
+}
+
 export function mapQuotationSummary(quotation: OdooQuotation) {
   return {
     id: String(quotation.id),
@@ -42,6 +53,8 @@ export function mapQuotationSummary(quotation: OdooQuotation) {
     total: toNumberValue(quotation.amount_total),
     status: toStringValue(quotation.state),
     paymentMethod: toRelationName(quotation.preferred_payment_method_line_id),
+    phoneNumber: toStudioPhoneNumber(quotation),
+    salePersonName: toStringValue(quotation.x_studio_sale_person_name),
   };
 }
 
@@ -66,7 +79,7 @@ export function mapQuotationDetail(input: {
     quotation.preferred_payment_method_line_id,
   );
   const paymentTerms = toRelationName(quotation.payment_term_id);
-  const studioPhone = toStringValue(quotation.x_studio_phonenumber);
+  const studioPhone = toStudioPhoneNumber(quotation);
 
   return {
     ...mapQuotationSummary(quotation),
