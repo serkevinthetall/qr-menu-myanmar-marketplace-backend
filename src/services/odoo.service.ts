@@ -37,6 +37,8 @@ export type OdooProduct = {
   categ_id: [number, string] | false;
   image_128?: string | false;
   uom_id: [number, string] | false;
+  /** Odoo favorite star: '0' normal, '1' favorite. */
+  priority?: string | false;
 };
 
 export type OdooProductDetail = OdooProduct & {
@@ -324,6 +326,7 @@ export async function fetchOdooProducts(
     'active',
     'categ_id',
     'uom_id',
+    'priority',
   ];
 
   const callSearchRead = async (searchDomain: unknown[]) => {
@@ -341,7 +344,8 @@ export async function fetchOdooProducts(
           method: 'search_read',
           args: [searchDomain, fields],
           kwargs: {
-            order: 'name asc',
+            // Favorites first (priority '1'), then name — same idea as Odoo.
+            order: 'priority desc, name asc',
             // Avoid image_128 (huge payload) and qty_available (slow computed field).
             limit,
             offset,
@@ -398,6 +402,7 @@ const PRODUCT_DETAIL_FIELDS = [
   'type',
   'standard_price',
   'image_128',
+  'priority',
 ];
 
 const PRODUCT_DETAIL_FIELDS_MIN = [
@@ -408,6 +413,7 @@ const PRODUCT_DETAIL_FIELDS_MIN = [
   'active',
   'categ_id',
   'uom_id',
+  'priority',
 ];
 
 export async function fetchOdooProductById(
@@ -452,6 +458,22 @@ export async function fetchOdooProductById(
       ? error
       : new Error('Failed to load product.');
   }
+}
+
+/** Toggle Odoo product favorite star (`priority`: '1' = favorite, '0' = normal). */
+export async function updateOdooProductFavorite(
+  userId: string,
+  productId: number,
+  favorite: boolean,
+): Promise<void> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  await writeOdooRecordAsUser(session, 'product.product', productId, {
+    priority: favorite ? '1' : '0',
+  });
 }
 
 export type OdooQuotation = {

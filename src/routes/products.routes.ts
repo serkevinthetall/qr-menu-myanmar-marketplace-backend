@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import {
   fetchOdooProductById,
   fetchOdooProducts,
+  updateOdooProductFavorite,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 import {
@@ -25,6 +26,11 @@ function mapProductImage(image: string | false | undefined): string {
     return raw;
   }
   return `data:image/png;base64,${raw}`;
+}
+
+/** Odoo priority Selection: '1' = favorite star, '0' = normal. */
+function isOdooFavorite(priority: string | false | undefined): boolean {
+  return String(priority ?? '0') === '1';
 }
 
 router.get('/', async (req: AuthRequest, res) => {
@@ -53,6 +59,7 @@ router.get('/', async (req: AuthRequest, res) => {
       // Images omitted on list fetch for speed; UI uses ProductThumb placeholder.
       image: '',
       unit: Array.isArray(product.uom_id) ? product.uom_id[1] : 'Units',
+      favorite: isOdooFavorite(product.priority),
     }));
 
     const effectiveLimit = limit ?? 500;
@@ -100,12 +107,31 @@ router.get('/:id', async (req: AuthRequest, res) => {
         description: toStringValue(product.description_sale),
         type: toStringValue(product.type),
         image: mapProductImage(product.image_128),
+        favorite: isOdooFavorite(product.priority),
       },
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load product.';
     console.error('[products]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.put('/:id/favorite', async (req: AuthRequest, res) => {
+  const productId = Number(req.params.id);
+  if (!Number.isFinite(productId) || productId <= 0) {
+    return res.status(400).json({ message: 'Invalid product id.' });
+  }
+
+  const favorite = Boolean(req.body?.favorite);
+  try {
+    await updateOdooProductFavorite(req.user!.id, productId, favorite);
+    return res.json({ data: { id: String(productId), favorite } });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to update favorite.';
+    console.error('[products] favorite', message);
     return res.status(500).json({ message });
   }
 });
