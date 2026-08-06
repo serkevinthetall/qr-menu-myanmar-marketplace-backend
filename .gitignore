@@ -5,3 +5,5 @@ dist/
 .vercel/
 data/ai-insights/
 !data/ai-insights/.gitkeep
+data/product-favorites/
+!data/product-favorites/.gitkeep
