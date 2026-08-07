@@ -2522,6 +2522,38 @@ export async function fetchOdooContactById(
   );
 }
 
+/** Load multiple partners by id for Call list enrichment. */
+export async function fetchOdooContactsByIds(
+  userId: string,
+  contactIds: number[],
+): Promise<OdooContact[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const ids = [...new Set(contactIds)].filter(
+    id => Number.isFinite(id) && id > 0,
+  );
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const fields = [
+    ...CONTACT_BASE_FIELDS,
+    ...Object.keys(CONTACT_CUSTOM_FIELDS),
+    ...CONTACT_EXTRA_FIELDS,
+  ];
+
+  return searchReadOdooRecords<OdooContact>(
+    session,
+    'res.partner',
+    [['id', 'in', ids]],
+    fields,
+    { limit: ids.length, order: 'name asc' },
+  );
+}
+
 export async function fetchOdooPartnerCategoryNames(
   userId: string,
   categoryIds: number[],

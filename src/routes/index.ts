@@ -27,6 +27,7 @@ import { Router } from 'express';
  * or call /app from the website client.
  */
 import appRoutes from './app/index.js';
+import appInstallsRoutes from './app-installs.routes.js';
 import authRoutes from './auth.routes.js';
 import customersRoutes from './customers.routes.js';
 import insightsRoutes from './insights.routes.js';
@@ -59,6 +60,7 @@ router.use('/purchase-orders', purchaseOrdersRoutes);
 router.use('/sale-orders', saleOrdersRoutes);
 router.use('/online-orders', onlineOrdersRoutes);
 router.use('/insights', insightsRoutes);
+router.use('/app-installs', appInstallsRoutes);
 
 /** Handheld sales-rep app API (separate from web ERP routes). */
 router.use('/app', appRoutes);

@@ -1,0 +1,286 @@
+import { Router } from 'express';
+
+import { connectMongo, isMongoConfigured } from '../config/mongo.js';
+import { authMiddleware } from '../middleware/auth.js';
+import {
+  APP_INSTALL_REASONS,
+  APP_INSTALL_STATUSES,
+  AppInstallModel,
+  appInstallReasonLabel,
+  appInstallStatusLabel,
+  isAppInstallReason,
+  isAppInstallStatus,
+  type AppInstallReason,
+  type AppInstallStatus,
+} from '../models/app-install.model.js';
+import {
+  fetchOdooContactById,
+  fetchOdooContactsByIds,
+} from '../services/odoo.service.js';
+import { AuthRequest } from '../types/auth.js';
+
+const router = Router();
+
+router.use(authMiddleware);
+
+function requireMongo(res: import('express').Response): boolean {
+  if (!isMongoConfigured()) {
+    res.status(503).json({
+      message:
+        'MongoDB is not configured. Set MONGODB_URI on the Vercel backend.',
+    });
+    return false;
+  }
+  return true;
+}
+
+function toStringValue(value: unknown): string {
+  if (value === false || value === null || value === undefined) {
+    return '';
+  }
+  return String(value);
+}
+
+function mapDoc(doc: {
+  odooPartnerId: number;
+  partnerName?: string | null;
+  partnerPhone?: string | null;
+  status: AppInstallStatus;
+  reason?: AppInstallReason | null;
+  requestedAt?: Date | null;
+  updatedAt?: Date | null;
+  updatedByEmail?: string | null;
+  updatedByName?: string | null;
+}) {
+  return {
+    id: String(doc.odooPartnerId),
+    odooPartnerId: String(doc.odooPartnerId),
+    name: doc.partnerName || '',
+    phone: doc.partnerPhone || '',
+    status: doc.status,
+    statusLabel: appInstallStatusLabel(doc.status),
+    reason: doc.reason ?? null,
+    reasonLabel: appInstallReasonLabel(doc.reason),
+    requestedAt: doc.requestedAt?.toISOString?.() ?? null,
+    updatedAt: doc.updatedAt?.toISOString?.() ?? null,
+    updatedByEmail: doc.updatedByEmail || '',
+    updatedByName: doc.updatedByName || '',
+  };
+}
+
+router.get('/meta', (_req, res) => {
+  return res.json({
+    data: {
+      statuses: APP_INSTALL_STATUSES.map(status => ({
+        id: status,
+        label: appInstallStatusLabel(status),
+      })),
+      reasons: APP_INSTALL_REASONS.map(reason => ({
+        id: reason,
+        label: appInstallReasonLabel(reason),
+      })),
+    },
+  });
+});
+
+/** Map of odooPartnerId -> install record (for Contact list badges). */
+router.get('/map', async (req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  try {
+    await connectMongo();
+    const idsRaw = String(req.query.ids ?? '')
+      .split(',')
+      .map(part => Number(part.trim()))
+      .filter(id => Number.isFinite(id) && id > 0);
+
+    const query =
+      idsRaw.length > 0 ? { odooPartnerId: { $in: idsRaw } } : {};
+    const rows = await AppInstallModel.find(query).lean();
+    const map: Record<string, ReturnType<typeof mapDoc>> = {};
+    for (const row of rows) {
+      map[String(row.odooPartnerId)] = mapDoc(row as never);
+    }
+    return res.json({ data: map });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load install map.';
+    console.error('[app-installs] map', message);
+    return res.status(500).json({ message });
+  }
+});
+
+/** Call list: install records joined with live Odoo contact names/phones. */
+router.get('/', async (req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  try {
+    await connectMongo();
+    const statusRaw = String(req.query.status ?? '').trim();
+    const statusFilter = isAppInstallStatus(statusRaw) ? statusRaw : undefined;
+    const q = String(req.query.q ?? '').trim().toLowerCase();
+
+    const filter: Record<string, unknown> = {};
+    if (statusFilter) {
+      filter.status = statusFilter;
+    }
+
+    const rows = await AppInstallModel.find(filter)
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const partnerIds = rows.map(row => row.odooPartnerId);
+    const contacts = await fetchOdooContactsByIds(req.user!.id, partnerIds);
+    const contactById = new Map(contacts.map(c => [c.id, c]));
+
+    let data = rows.map(row => {
+      const contact = contactById.get(row.odooPartnerId);
+      const name =
+        (contact ? toStringValue(contact.name) : '') || row.partnerName || '';
+      const phone =
+        (contact ? toStringValue(contact.phone) : '') || row.partnerPhone || '';
+      return {
+        ...mapDoc(row as never),
+        name,
+        phone,
+        township: contact
+          ? toStringValue(
+              Array.isArray(contact.x_studio_many2one_field_8u9_1jp4l7r0g)
+                ? contact.x_studio_many2one_field_8u9_1jp4l7r0g[1]
+                : '',
+            )
+          : '',
+      };
+    });
+
+    if (q) {
+      data = data.filter(
+        row =>
+          row.name.toLowerCase().includes(q) ||
+          row.phone.toLowerCase().includes(q),
+      );
+    }
+
+    return res.json({
+      data,
+      meta: {
+        count: data.length,
+        status: statusFilter ?? null,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load call list.';
+    console.error('[app-installs] list', message);
+    return res.status(500).json({ message });
+  }
+});
+
+/** Add contact to Call list (Request). */
+router.post('/:partnerId/request', async (req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  const partnerId = Number(req.params.partnerId);
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    return res.status(400).json({ message: 'Invalid contact id.' });
+  }
+
+  try {
+    await connectMongo();
+    const contact = await fetchOdooContactById(req.user!.id, partnerId);
+    if (!contact) {
+      return res.status(404).json({ message: 'Contact not found in Odoo.' });
+    }
+
+    const existing = await AppInstallModel.findOne({ odooPartnerId: partnerId });
+    if (existing) {
+      return res.json({
+        data: mapDoc(existing.toObject() as never),
+        meta: { created: false },
+      });
+    }
+
+    const created = await AppInstallModel.create({
+      odooPartnerId: partnerId,
+      partnerName: toStringValue(contact.name),
+      partnerPhone: toStringValue(contact.phone),
+      status: 'not_called',
+      reason: null,
+      requestedAt: new Date(),
+      updatedByEmail: req.user?.email ?? '',
+      updatedByName: req.user?.name ?? '',
+    });
+
+    return res.status(201).json({
+      data: mapDoc(created.toObject() as never),
+      meta: { created: true },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to create install request.';
+    console.error('[app-installs] request', message);
+    return res.status(500).json({ message });
+  }
+});
+
+/** Update install status / reason. */
+router.put('/:partnerId', async (req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  const partnerId = Number(req.params.partnerId);
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    return res.status(400).json({ message: 'Invalid contact id.' });
+  }
+
+  const statusRaw = req.body?.status;
+  if (!isAppInstallStatus(statusRaw)) {
+    return res.status(400).json({
+      message: `Invalid status. Use one of: ${APP_INSTALL_STATUSES.join(', ')}`,
+    });
+  }
+
+  let reason: AppInstallReason | null = null;
+  if (statusRaw === 'not_installed') {
+    if (!isAppInstallReason(req.body?.reason)) {
+      return res.status(400).json({
+        message: `Reason required for not_installed. Use one of: ${APP_INSTALL_REASONS.join(', ')}`,
+      });
+    }
+    reason = req.body.reason;
+  }
+
+  try {
+    await connectMongo();
+    let doc = await AppInstallModel.findOne({ odooPartnerId: partnerId });
+    if (!doc) {
+      const contact = await fetchOdooContactById(req.user!.id, partnerId);
+      if (!contact) {
+        return res.status(404).json({ message: 'Contact not found in Odoo.' });
+      }
+      doc = await AppInstallModel.create({
+        odooPartnerId: partnerId,
+        partnerName: toStringValue(contact.name),
+        partnerPhone: toStringValue(contact.phone),
+        status: statusRaw,
+        reason,
+        requestedAt: new Date(),
+        updatedByEmail: req.user?.email ?? '',
+        updatedByName: req.user?.name ?? '',
+      });
+    } else {
+      doc.status = statusRaw;
+      doc.reason = reason;
+      doc.updatedByEmail = req.user?.email ?? '';
+      doc.updatedByName = req.user?.name ?? '';
+      if (statusRaw === 'installed' || statusRaw === 'not_called') {
+        doc.reason = null;
+      }
+      await doc.save();
+    }
+
+    return res.json({ data: mapDoc(doc.toObject() as never) });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to update install status.';
+    console.error('[app-installs] update', message);
+    return res.status(500).json({ message });
+  }
+});
+
+export default router;

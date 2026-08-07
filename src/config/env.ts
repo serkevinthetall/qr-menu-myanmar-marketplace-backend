@@ -101,6 +101,14 @@ export const env = {
     process.env.ODOO_PRICELIST_PRO_NAME ?? 'Pro Membership'
   ).trim(),
 
+  /** MongoDB Atlas connection (Call list / App installation). */
+  mongodbUri: (
+    process.env.MONGODB_URI ||
+    process.env.MONGO_URL ||
+    process.env.MONGODB_URL ||
+    ''
+  ).trim(),
+
   /**
    * Optional Groq AI suggestions for Overview.
    * Set AI_INSIGHTS_ENABLED=false (or omit) to fully disable — easy to remove later.
