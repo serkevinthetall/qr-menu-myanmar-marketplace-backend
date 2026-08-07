@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { getOdooSession } from '../services/odoo-session.store.js';
 import {
   fetchOdooProductById,
+  fetchOdooProductImageBase64,
   fetchOdooProductPrices,
   fetchOdooProducts,
   resolveProductFavoriteField,
@@ -25,15 +26,39 @@ const router = Router();
 
 router.use(authMiddleware);
 
-function mapProductImage(image: string | false | undefined): string {
-  const raw = toStringValue(image);
-  if (!raw) {
-    return '';
+function productImagePath(productId: number | string): string {
+  return `/products/${productId}/image`;
+}
+
+function sniffImageContentType(bytes: Buffer): string {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
   }
-  if (raw.startsWith('data:') || raw.startsWith('http')) {
-    return raw;
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return 'image/png';
   }
-  return `data:image/png;base64,${raw}`;
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46
+  ) {
+    return 'image/gif';
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes.toString('ascii', 0, 4) === 'RIFF' &&
+    bytes.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return 'image/png';
 }
 
 function mapMembershipPrice(entry: {
@@ -98,8 +123,8 @@ router.get('/', async (req: AuthRequest, res) => {
         stock: product.qty_available ?? 0,
         active: product.active,
         category: Array.isArray(product.categ_id) ? product.categ_id[1] : '',
-        // Images omitted on list fetch for speed; UI uses ProductThumb placeholder.
-        image: '',
+        // Authenticated thumbnail proxy — keeps list payloads small.
+        image: productImagePath(product.id),
         unit: Array.isArray(product.uom_id) ? product.uom_id[1] : 'Units',
         favorite,
       };
@@ -124,6 +149,32 @@ router.get('/', async (req: AuthRequest, res) => {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load products.';
+    return res.status(500).json({ message });
+  }
+});
+
+router.get('/:id/image', async (req: AuthRequest, res) => {
+  const productId = Number(req.params.id);
+  if (!Number.isFinite(productId) || productId <= 0) {
+    return res.status(400).json({ message: 'Invalid product id.' });
+  }
+
+  try {
+    const base64 = await fetchOdooProductImageBase64(req.user!.id, productId);
+    if (!base64) {
+      return res.status(404).json({ message: 'Product has no image.' });
+    }
+    const bytes = Buffer.from(base64, 'base64');
+    if (!bytes.length) {
+      return res.status(404).json({ message: 'Product has no image.' });
+    }
+    res.setHeader('Content-Type', sniffImageContentType(bytes));
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    return res.send(bytes);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load product image.';
+    console.error('[products] image', message);
     return res.status(500).json({ message });
   }
 });
@@ -185,7 +236,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
         barcode: toStringValue(product.barcode),
         description: toStringValue(product.description_sale),
         type: toStringValue(product.type),
-        image: mapProductImage(product.image_128),
+        image: productImagePath(product.id),
         favorite,
         premiumPrice: premium,
         proPrice: pro,

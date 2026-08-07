@@ -438,7 +438,6 @@ const PRODUCT_DETAIL_FIELDS = [
   'description_sale',
   'type',
   'standard_price',
-  'image_128',
 ];
 
 const PRODUCT_DETAIL_FIELDS_MIN = [
@@ -1063,6 +1062,29 @@ async function readOdooRecordAsUser<T>(
     fields,
   ]);
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+/** Tiny product image fetch for the /products/:id/image proxy. */
+export async function fetchOdooProductImageBase64(
+  userId: string,
+  productId: number,
+): Promise<string | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const row = await readOdooRecordAsUser<{ image_128?: string | false }>(
+    session,
+    'product.product',
+    productId,
+    ['image_128'],
+  );
+  const raw = row?.image_128;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return null;
+  }
+  return raw.trim();
 }
 
 async function createOdooRecordAsUser(
