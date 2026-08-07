@@ -2522,7 +2522,7 @@ export async function fetchOdooContactById(
   );
 }
 
-/** Load multiple partners by id for Call list enrichment. */
+/** @temp-feature app-install-call-list — only used by Call List; delete with that feature. */
 export async function fetchOdooContactsByIds(
   userId: string,
   contactIds: number[],

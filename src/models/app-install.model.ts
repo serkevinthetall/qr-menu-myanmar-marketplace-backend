@@ -1,3 +1,7 @@
+/**
+ * @temp-feature app-install-call-list
+ * TEMPORARY model — delete with Call List feature.
+ */
 import { Schema, model, models, type InferSchemaType, type Model } from 'mongoose';
 
 export const APP_INSTALL_STATUSES = [

@@ -27,6 +27,7 @@ import { Router } from 'express';
  * or call /app from the website client.
  */
 import appRoutes from './app/index.js';
+// @temp-feature app-install-call-list — remove import + mount below when dropping feature
 import appInstallsRoutes from './app-installs.routes.js';
 import authRoutes from './auth.routes.js';
 import customersRoutes from './customers.routes.js';
@@ -38,6 +39,7 @@ import productsRoutes from './products.routes.js';
 import purchaseOrdersRoutes from './purchase-orders.routes.js';
 import quotationsRoutes from './quotations.routes.js';
 import saleOrdersRoutes from './sale-orders.routes.js';
+import { env } from '../config/env.js';
 
 const router = Router();
 
@@ -60,7 +62,10 @@ router.use('/purchase-orders', purchaseOrdersRoutes);
 router.use('/sale-orders', saleOrdersRoutes);
 router.use('/online-orders', onlineOrdersRoutes);
 router.use('/insights', insightsRoutes);
-router.use('/app-installs', appInstallsRoutes);
+// @temp-feature app-install-call-list
+if (env.enableAppInstallCallList) {
+  router.use('/app-installs', appInstallsRoutes);
+}
 
 /** Handheld sales-rep app API (separate from web ERP routes). */
 router.use('/app', appRoutes);

@@ -1,3 +1,8 @@
+/**
+ * @temp-feature app-install-call-list
+ * TEMPORARY Mongo connection for Call List / app installs.
+ * Safe to delete with the rest of the feature (see frontend/features/app-install/enabled.ts).
+ */
 import mongoose from 'mongoose';
 
 import { env } from './env.js';

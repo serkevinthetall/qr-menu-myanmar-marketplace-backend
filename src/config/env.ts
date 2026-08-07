@@ -101,13 +101,37 @@ export const env = {
     process.env.ODOO_PRICELIST_PRO_NAME ?? 'Pro Membership'
   ).trim(),
 
-  /** MongoDB Atlas connection (Call list / App installation). */
+  /** MongoDB Atlas connection (temporary Call list / App installation). */
   mongodbUri: (
     process.env.MONGODB_URI ||
     process.env.MONGO_URL ||
     process.env.MONGODB_URL ||
     ''
   ).trim(),
+
+  /**
+   * TEMPORARY — App install Call List API.
+   * Set ENABLE_APP_INSTALL_CALL_LIST=false to unmount routes immediately.
+   * Defaults on when MONGODB_URI is set.
+   * Removal: see frontend/features/app-install/enabled.ts checklist.
+   */
+  enableAppInstallCallList: (() => {
+    const flag = (process.env.ENABLE_APP_INSTALL_CALL_LIST ?? '').trim().toLowerCase();
+    if (flag === 'false' || flag === '0' || flag === 'off') {
+      return false;
+    }
+    if (flag === 'true' || flag === '1' || flag === 'on') {
+      return true;
+    }
+    return Boolean(
+      (
+        process.env.MONGODB_URI ||
+        process.env.MONGO_URL ||
+        process.env.MONGODB_URL ||
+        ''
+      ).trim(),
+    );
+  })(),
 
   /**
    * Optional Groq AI suggestions for Overview.
