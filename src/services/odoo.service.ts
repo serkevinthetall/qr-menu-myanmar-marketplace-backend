@@ -1074,17 +1074,34 @@ export async function fetchOdooProductImageBase64(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  const row = await readOdooRecordAsUser<{ image_128?: string | false }>(
-    session,
-    'product.product',
-    productId,
-    ['image_128'],
-  );
-  const raw = row?.image_128;
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return null;
+  const row = await readOdooRecordAsUser<{
+    image_128?: string | false;
+    product_tmpl_id?: [number, string] | false;
+  }>(session, 'product.product', productId, ['image_128', 'product_tmpl_id']);
+
+  const onVariant = row?.image_128;
+  if (typeof onVariant === 'string' && onVariant.trim()) {
+    return onVariant.trim();
   }
-  return raw.trim();
+
+  // Many Odoo setups keep the photo on product.template only.
+  const templateId = Array.isArray(row?.product_tmpl_id)
+    ? Number(row.product_tmpl_id[0])
+    : 0;
+  if (Number.isFinite(templateId) && templateId > 0) {
+    const template = await readOdooRecordAsUser<{ image_128?: string | false }>(
+      session,
+      'product.template',
+      templateId,
+      ['image_128'],
+    );
+    const onTemplate = template?.image_128;
+    if (typeof onTemplate === 'string' && onTemplate.trim()) {
+      return onTemplate.trim();
+    }
+  }
+
+  return null;
 }
 
 async function createOdooRecordAsUser(
