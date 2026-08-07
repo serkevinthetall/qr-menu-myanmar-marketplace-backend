@@ -93,6 +93,14 @@ export const env = {
   /** Technical name of the custom Odoo Township model (Studio). */
   odooTownshipModel: (process.env.ODOO_TOWNSHIP_MODEL ?? 'x_townships').trim(),
 
+  /** Product membership pricelist names (matched with ilike). */
+  odooPricelistPremiumName: (
+    process.env.ODOO_PRICELIST_PREMIUM_NAME ?? 'Premium Membership'
+  ).trim(),
+  odooPricelistProName: (
+    process.env.ODOO_PRICELIST_PRO_NAME ?? 'Pro Membership'
+  ).trim(),
+
   /**
    * Optional Groq AI suggestions for Overview.
    * Set AI_INSIGHTS_ENABLED=false (or omit) to fully disable — easy to remove later.

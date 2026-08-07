@@ -550,6 +550,331 @@ export async function updateOdooProductFavorite(
   return true;
 }
 
+export type OdooProductMembershipPrice = {
+  pricelistId: number | null;
+  pricelistName: string;
+  itemId: number | null;
+  price: number | null;
+};
+
+export type OdooProductPrices = {
+  salesPrice: number;
+  premium: OdooProductMembershipPrice;
+  pro: OdooProductMembershipPrice;
+};
+
+type OdooPricelistRow = { id: number; name: string };
+type OdooPricelistItemRow = {
+  id: number;
+  pricelist_id: [number, string] | false;
+  product_tmpl_id: [number, string] | false;
+  product_id: [number, string] | false;
+  min_quantity: number;
+  compute_price?: string;
+  fixed_price?: number;
+  price?: number;
+};
+
+const pricelistIdCache = new Map<string, number | null>();
+
+function relationId(value: [number, string] | false | undefined): number | null {
+  return Array.isArray(value) && typeof value[0] === 'number' ? value[0] : null;
+}
+
+function itemFixedPrice(row: OdooPricelistItemRow): number | null {
+  const fixed = Number(row.fixed_price);
+  if (Number.isFinite(fixed)) {
+    return fixed;
+  }
+  const legacy = Number(row.price);
+  return Number.isFinite(legacy) ? legacy : null;
+}
+
+async function findPricelistIdByName(
+  session: { cookie: string; uid: number },
+  nameQuery: string,
+): Promise<number | null> {
+  const key = nameQuery.trim().toLowerCase();
+  if (!key) return null;
+  if (pricelistIdCache.has(key)) {
+    return pricelistIdCache.get(key) ?? null;
+  }
+
+  const rows = await searchReadOdooRecords<OdooPricelistRow>(
+    session,
+    'product.pricelist',
+    [['name', 'ilike', nameQuery], ['active', '=', true]],
+    ['id', 'name'],
+    { limit: 5, order: 'id asc' },
+  );
+
+  // Prefer an exact (case-insensitive) match, else first ilike hit.
+  const exact = rows.find(row => row.name.trim().toLowerCase() === key);
+  const chosen = exact ?? rows[0] ?? null;
+  const id = chosen?.id ?? null;
+  pricelistIdCache.set(key, id);
+  return id;
+}
+
+async function findPricelistItemForProduct(
+  session: { cookie: string; uid: number },
+  pricelistId: number,
+  productId: number,
+  templateId: number,
+): Promise<OdooPricelistItemRow | null> {
+  const rows = await searchReadOdooRecords<OdooPricelistItemRow>(
+    session,
+    'product.pricelist.item',
+    [
+      '&',
+      ['pricelist_id', '=', pricelistId],
+      '|',
+      ['product_id', '=', productId],
+      ['product_tmpl_id', '=', templateId],
+    ],
+    [
+      'id',
+      'pricelist_id',
+      'product_tmpl_id',
+      'product_id',
+      'min_quantity',
+      'compute_price',
+      'fixed_price',
+      'price',
+    ],
+    { limit: 20, order: 'min_quantity asc, id asc' },
+  );
+
+  if (!rows.length) return null;
+
+  const variantExact = rows.find(row => relationId(row.product_id) === productId);
+  if (variantExact) return variantExact;
+
+  const templateExact = rows.find(
+    row =>
+      relationId(row.product_tmpl_id) === templateId && !relationId(row.product_id),
+  );
+  return templateExact ?? rows[0] ?? null;
+}
+
+async function loadMembershipPrice(
+  session: { cookie: string; uid: number },
+  pricelistName: string,
+  productId: number,
+  templateId: number,
+): Promise<OdooProductMembershipPrice> {
+  const pricelistId = await findPricelistIdByName(session, pricelistName);
+  if (!pricelistId) {
+    return {
+      pricelistId: null,
+      pricelistName,
+      itemId: null,
+      price: null,
+    };
+  }
+
+  const item = await findPricelistItemForProduct(
+    session,
+    pricelistId,
+    productId,
+    templateId,
+  );
+
+  return {
+    pricelistId,
+    pricelistName,
+    itemId: item?.id ?? null,
+    price: item ? itemFixedPrice(item) : null,
+  };
+}
+
+/**
+ * Sales list_price + Premium / Pro membership pricelist fixed prices.
+ */
+export async function fetchOdooProductPrices(
+  userId: string,
+  productId: number,
+): Promise<OdooProductPrices | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const product = await readOdooRecordAsUser<{
+    list_price?: number;
+    product_tmpl_id?: [number, string] | false;
+  }>(session, 'product.product', productId, ['list_price', 'product_tmpl_id']);
+  if (!product) return null;
+
+  const templateId = templateIdFromProduct(product);
+  if (!templateId) {
+    throw new Error('Could not resolve product template for prices.');
+  }
+
+  const [premium, pro] = await Promise.all([
+    loadMembershipPrice(
+      session,
+      env.odooPricelistPremiumName,
+      productId,
+      templateId,
+    ),
+    loadMembershipPrice(
+      session,
+      env.odooPricelistProName,
+      productId,
+      templateId,
+    ),
+  ]);
+
+  return {
+    salesPrice: Number(product.list_price) || 0,
+    premium,
+    pro,
+  };
+}
+
+async function upsertMembershipFixedPrice(
+  session: { cookie: string; uid: number },
+  pricelistName: string,
+  productId: number,
+  templateId: number,
+  price: number,
+): Promise<OdooProductMembershipPrice> {
+  const pricelistId = await findPricelistIdByName(session, pricelistName);
+  if (!pricelistId) {
+    throw new Error(
+      `Pricelist "${pricelistName}" was not found in Odoo. Check the name or set ODOO_PRICELIST_* env vars.`,
+    );
+  }
+
+  const existing = await findPricelistItemForProduct(
+    session,
+    pricelistId,
+    productId,
+    templateId,
+  );
+
+  if (existing) {
+    try {
+      await writeOdooRecordAsUser(session, 'product.pricelist.item', existing.id, {
+        compute_price: 'fixed',
+        fixed_price: price,
+        min_quantity: existing.min_quantity > 0 ? existing.min_quantity : 1,
+      });
+    } catch {
+      // Older DBs may use `price` instead of `fixed_price`.
+      await writeOdooRecordAsUser(session, 'product.pricelist.item', existing.id, {
+        compute_price: 'fixed',
+        price,
+        min_quantity: existing.min_quantity > 0 ? existing.min_quantity : 1,
+      });
+    }
+    return {
+      pricelistId,
+      pricelistName,
+      itemId: existing.id,
+      price,
+    };
+  }
+
+  let itemId: number;
+  try {
+    itemId = await createOdooRecordAsUser(session, 'product.pricelist.item', {
+      pricelist_id: pricelistId,
+      applied_on: '1_product',
+      product_tmpl_id: templateId,
+      compute_price: 'fixed',
+      fixed_price: price,
+      min_quantity: 1,
+    });
+  } catch {
+    itemId = await createOdooRecordAsUser(session, 'product.pricelist.item', {
+      pricelist_id: pricelistId,
+      applied_on: '1_product',
+      product_tmpl_id: templateId,
+      compute_price: 'fixed',
+      price,
+      min_quantity: 1,
+    });
+  }
+
+  return {
+    pricelistId,
+    pricelistName,
+    itemId,
+    price,
+  };
+}
+
+export async function updateOdooProductPrices(
+  userId: string,
+  productId: number,
+  updates: {
+    salesPrice?: number;
+    premiumPrice?: number;
+    proPrice?: number;
+  },
+): Promise<OdooProductPrices> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const product = await readOdooRecordAsUser<{
+    list_price?: number;
+    product_tmpl_id?: [number, string] | false;
+  }>(session, 'product.product', productId, ['list_price', 'product_tmpl_id']);
+  if (!product) {
+    throw new Error('Product not found.');
+  }
+
+  const templateId = templateIdFromProduct(product);
+  if (!templateId) {
+    throw new Error('Could not resolve product template for prices.');
+  }
+
+  if (updates.salesPrice !== undefined) {
+    if (!Number.isFinite(updates.salesPrice) || updates.salesPrice < 0) {
+      throw new Error('Invalid sales price.');
+    }
+    await writeOdooRecordAsUser(session, 'product.template', templateId, {
+      list_price: updates.salesPrice,
+    });
+  }
+
+  if (updates.premiumPrice !== undefined) {
+    if (!Number.isFinite(updates.premiumPrice) || updates.premiumPrice < 0) {
+      throw new Error('Invalid Premium Membership price.');
+    }
+    await upsertMembershipFixedPrice(
+      session,
+      env.odooPricelistPremiumName,
+      productId,
+      templateId,
+      updates.premiumPrice,
+    );
+  }
+
+  if (updates.proPrice !== undefined) {
+    if (!Number.isFinite(updates.proPrice) || updates.proPrice < 0) {
+      throw new Error('Invalid Pro Membership price.');
+    }
+    await upsertMembershipFixedPrice(
+      session,
+      env.odooPricelistProName,
+      productId,
+      templateId,
+      updates.proPrice,
+    );
+  }
+
+  const prices = await fetchOdooProductPrices(userId, productId);
+  if (!prices) {
+    throw new Error('Failed to reload product prices.');
+  }
+  return prices;
+}
+
 export type OdooQuotation = {
   id: number;
   name: string;

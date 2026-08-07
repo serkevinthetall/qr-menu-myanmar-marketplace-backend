@@ -4,9 +4,11 @@ import { authMiddleware } from '../middleware/auth.js';
 import { getOdooSession } from '../services/odoo-session.store.js';
 import {
   fetchOdooProductById,
+  fetchOdooProductPrices,
   fetchOdooProducts,
   resolveProductFavoriteField,
   updateOdooProductFavorite,
+  updateOdooProductPrices,
 } from '../services/odoo.service.js';
 import {
   listStoredFavoriteProductIds,
@@ -32,6 +34,20 @@ function mapProductImage(image: string | false | undefined): string {
     return raw;
   }
   return `data:image/png;base64,${raw}`;
+}
+
+function mapMembershipPrice(entry: {
+  pricelistId: number | null;
+  pricelistName: string;
+  itemId: number | null;
+  price: number | null;
+}) {
+  return {
+    pricelistId: entry.pricelistId != null ? String(entry.pricelistId) : null,
+    pricelistName: entry.pricelistName,
+    itemId: entry.itemId != null ? String(entry.itemId) : null,
+    price: entry.price,
+  };
 }
 
 async function favoriteForProduct(
@@ -130,6 +146,31 @@ router.get('/:id', async (req: AuthRequest, res) => {
       product.__favorite,
     );
 
+    let premium = {
+      pricelistId: null as string | null,
+      pricelistName: 'Premium Membership',
+      itemId: null as string | null,
+      price: null as number | null,
+    };
+    let pro = {
+      pricelistId: null as string | null,
+      pricelistName: 'Pro Membership',
+      itemId: null as string | null,
+      price: null as number | null,
+    };
+    try {
+      const prices = await fetchOdooProductPrices(req.user!.id, product.id);
+      if (prices) {
+        premium = mapMembershipPrice(prices.premium);
+        pro = mapMembershipPrice(prices.pro);
+      }
+    } catch (priceError) {
+      console.warn(
+        '[products] membership prices unavailable:',
+        priceError instanceof Error ? priceError.message : priceError,
+      );
+    }
+
     return res.json({
       data: {
         id: String(product.id),
@@ -146,12 +187,67 @@ router.get('/:id', async (req: AuthRequest, res) => {
         type: toStringValue(product.type),
         image: mapProductImage(product.image_128),
         favorite,
+        premiumPrice: premium,
+        proPrice: pro,
       },
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load product.';
     console.error('[products]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.put('/:id/prices', async (req: AuthRequest, res) => {
+  const productId = Number(req.params.id);
+  if (!Number.isFinite(productId) || productId <= 0) {
+    return res.status(400).json({ message: 'Invalid product id.' });
+  }
+
+  const body = req.body ?? {};
+  const updates: {
+    salesPrice?: number;
+    premiumPrice?: number;
+    proPrice?: number;
+  } = {};
+
+  if (body.salesPrice !== undefined && body.salesPrice !== null && body.salesPrice !== '') {
+    updates.salesPrice = Number(body.salesPrice);
+  }
+  if (
+    body.premiumPrice !== undefined &&
+    body.premiumPrice !== null &&
+    body.premiumPrice !== ''
+  ) {
+    updates.premiumPrice = Number(body.premiumPrice);
+  }
+  if (body.proPrice !== undefined && body.proPrice !== null && body.proPrice !== '') {
+    updates.proPrice = Number(body.proPrice);
+  }
+
+  if (
+    updates.salesPrice === undefined &&
+    updates.premiumPrice === undefined &&
+    updates.proPrice === undefined
+  ) {
+    return res.status(400).json({ message: 'No prices to update.' });
+  }
+
+  try {
+    const prices = await updateOdooProductPrices(req.user!.id, productId, updates);
+    return res.json({
+      data: {
+        id: String(productId),
+        price: prices.salesPrice,
+        premiumPrice: mapMembershipPrice(prices.premium),
+        proPrice: mapMembershipPrice(prices.pro),
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to update product prices.';
+    console.error('[products] prices', message);
     return res.status(500).json({ message });
   }
 });
