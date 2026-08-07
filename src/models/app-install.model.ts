@@ -1,8 +1,11 @@
 /**
  * @temp-feature app-install-call-list
  * TEMPORARY model — delete with Call List feature.
+ *
+ * Use default mongoose import: named ESM exports like `models`/`model`
+ * break on Vercel’s Node ESM loader (“does not provide an export named 'models'”).
  */
-import { Schema, model, models, type InferSchemaType, type Model } from 'mongoose';
+import mongoose, { Schema, type InferSchemaType, type Model } from 'mongoose';
 
 export const APP_INSTALL_STATUSES = [
   'not_called',
@@ -58,8 +61,8 @@ export type AppInstallDoc = InferSchemaType<typeof AppInstallSchema> & {
 };
 
 export const AppInstallModel: Model<AppInstallDoc> =
-  (models.AppInstall as Model<AppInstallDoc>) ||
-  model<AppInstallDoc>('AppInstall', AppInstallSchema);
+  (mongoose.models.AppInstall as Model<AppInstallDoc>) ||
+  mongoose.model<AppInstallDoc>('AppInstall', AppInstallSchema);
 
 export function isAppInstallStatus(value: unknown): value is AppInstallStatus {
   return (
