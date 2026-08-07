@@ -67,7 +67,8 @@ export const AppInstallModel: Model<AppInstallDoc> =
 
 /** Remove legacy Not called rows from Call List (status retired). */
 export async function migrateLegacyNotCalledStatus(): Promise<void> {
-  await AppInstallModel.deleteMany({ status: 'not_called' });
+  // Use native collection so invalid enum values still match.
+  await AppInstallModel.collection.deleteMany({ status: 'not_called' });
 }
 
 export function isAppInstallStatus(value: unknown): value is AppInstallStatus {

@@ -323,7 +323,10 @@ router.delete('/:partnerId', async (req: AuthRequest, res) => {
 
   try {
     await connectMongo();
-    const result = await AppInstallModel.deleteOne({ odooPartnerId: partnerId });
+    // Native delete so legacy enum values (e.g. not_called) still match.
+    const result = await AppInstallModel.collection.deleteOne({
+      odooPartnerId: partnerId,
+    });
     if (!result.deletedCount) {
       return res.status(404).json({ message: 'Call list entry not found.' });
     }

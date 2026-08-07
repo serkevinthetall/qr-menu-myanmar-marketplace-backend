@@ -26,6 +26,8 @@ export function createApp() {
         callback(null, false);
       },
       credentials: true,
+      methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
     }),
   );
   app.use(serverlessJsonBody);
