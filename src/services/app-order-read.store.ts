@@ -1,14 +1,17 @@
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { Redis } from '@upstash/redis';
+import { Redis as UpstashRedis } from '@upstash/redis';
+import { createClient, type RedisClientType } from 'redis';
 
 /**
  * Team-wide App Order read ids.
  *
  * On Vercel the filesystem is ephemeral and not shared across serverless
- * instances, so production uses Upstash Redis (Vercel Marketplace KV/Redis).
- * Local/dev can fall back to a JSON file when Redis env vars are unset.
+ * instances. Prefer:
+ * 1) Upstash / Vercel KV REST (KV_* or UPSTASH_REDIS_REST_*)
+ * 2) Redis Cloud TCP via REDIS_URL (Vercel Marketplace Redis)
+ * 3) Local JSON file fallback (dev only)
  */
 
 const REDIS_KEY = 'qr-shop:app-order-read-ids';
@@ -17,14 +20,29 @@ type ReadFile = {
   readOrderIds: number[];
 };
 
-let redisClient: Redis | null | undefined;
+type RedisBackend =
+  | { kind: 'upstash'; client: UpstashRedis }
+  | { kind: 'tcp'; client: RedisClientType };
+
+let redisBackend: RedisBackend | null | undefined;
 let warnedMissingRedis = false;
+let tcpConnectPromise: Promise<RedisClientType> | null = null;
 
-function getRedis(): Redis | null {
-  if (redisClient !== undefined) {
-    return redisClient;
+function warnMissingRedisInProduction() {
+  if (
+    !warnedMissingRedis &&
+    (process.env.NODE_ENV ?? 'development') === 'production'
+  ) {
+    warnedMissingRedis = true;
+    console.warn(
+      '[app-order-read] Redis not configured. Set REDIS_URL ' +
+        '(Redis Cloud) or KV_REST_API_URL + KV_REST_API_TOKEN ' +
+        '(Upstash). Without this, read/unread resets across Vercel instances.',
+    );
   }
+}
 
+function getUpstashClient(): UpstashRedis | null {
   const url = (
     process.env.KV_REST_API_URL ||
     process.env.UPSTASH_REDIS_REST_URL ||
@@ -35,25 +53,67 @@ function getRedis(): Redis | null {
     process.env.UPSTASH_REDIS_REST_TOKEN ||
     ''
   ).trim();
+  if (!url || !token) return null;
+  return new UpstashRedis({ url, token });
+}
 
-  if (!url || !token) {
-    redisClient = null;
-    if (
-      !warnedMissingRedis &&
-      (process.env.NODE_ENV ?? 'development') === 'production'
-    ) {
-      warnedMissingRedis = true;
-      console.warn(
-        '[app-order-read] Upstash Redis not configured. ' +
-          'Set KV_REST_API_URL + KV_REST_API_TOKEN (or UPSTASH_REDIS_REST_*) ' +
-          'or read/unread will reset across Vercel instances.',
-      );
+async function getTcpClient(): Promise<RedisClientType | null> {
+  const url = (process.env.REDIS_URL || '').trim();
+  if (!url) return null;
+
+  if (!tcpConnectPromise) {
+    tcpConnectPromise = (async () => {
+      const client = createClient({
+        url,
+        socket: {
+          // Serverless: fail fast rather than hang a request.
+          connectTimeout: 8_000,
+          reconnectStrategy: retries => Math.min(retries * 200, 2_000),
+        },
+      });
+      client.on('error', err => {
+        console.error('[app-order-read] Redis TCP error:', err.message);
+      });
+      await client.connect();
+      return client as RedisClientType;
+    })().catch(error => {
+      tcpConnectPromise = null;
+      throw error;
+    });
+  }
+
+  return tcpConnectPromise;
+}
+
+async function getRedisBackend(): Promise<RedisBackend | null> {
+  if (redisBackend !== undefined) {
+    return redisBackend;
+  }
+
+  const upstash = getUpstashClient();
+  if (upstash) {
+    redisBackend = { kind: 'upstash', client: upstash };
+    return redisBackend;
+  }
+
+  try {
+    const tcp = await getTcpClient();
+    if (tcp) {
+      redisBackend = { kind: 'tcp', client: tcp };
+      return redisBackend;
     }
+  } catch (error) {
+    console.error(
+      '[app-order-read] Failed to connect REDIS_URL:',
+      error instanceof Error ? error.message : error,
+    );
+    redisBackend = null;
     return null;
   }
 
-  redisClient = new Redis({ url, token });
-  return redisClient;
+  redisBackend = null;
+  warnMissingRedisInProduction();
+  return null;
 }
 
 function normalizeIds(raw: unknown[]): number[] {
@@ -62,21 +122,33 @@ function normalizeIds(raw: unknown[]): number[] {
     .filter(id => Number.isFinite(id) && id > 0);
 }
 
-async function listFromRedis(redis: Redis): Promise<Set<number>> {
-  const members = await redis.smembers(REDIS_KEY);
-  return new Set(normalizeIds(members as unknown[]));
+async function listFromRedis(backend: RedisBackend): Promise<Set<number>> {
+  if (backend.kind === 'upstash') {
+    const members = await backend.client.smembers(REDIS_KEY);
+    return new Set(normalizeIds(members as unknown[]));
+  }
+  const members = await backend.client.sMembers(REDIS_KEY);
+  return new Set(normalizeIds(members));
 }
 
 async function setInRedis(
-  redis: Redis,
+  backend: RedisBackend,
   orderId: number,
   read: boolean,
 ): Promise<void> {
   const member = String(orderId);
+  if (backend.kind === 'upstash') {
+    if (read) {
+      await backend.client.sadd(REDIS_KEY, member);
+    } else {
+      await backend.client.srem(REDIS_KEY, member);
+    }
+    return;
+  }
   if (read) {
-    await redis.sadd(REDIS_KEY, member);
+    await backend.client.sAdd(REDIS_KEY, member);
   } else {
-    await redis.srem(REDIS_KEY, member);
+    await backend.client.sRem(REDIS_KEY, member);
   }
 }
 
@@ -129,9 +201,9 @@ async function writeAllToFile(data: ReadFile): Promise<void> {
 
 /** Shared across all users/devices. */
 export async function listReadAppOrderIds(): Promise<Set<number>> {
-  const redis = getRedis();
-  if (redis) {
-    return listFromRedis(redis);
+  const backend = await getRedisBackend();
+  if (backend) {
+    return listFromRedis(backend);
   }
   const all = await readAllFromFile();
   return new Set(all.readOrderIds);
@@ -149,9 +221,9 @@ export async function setAppOrderRead(
 ): Promise<void> {
   if (!Number.isFinite(orderId) || orderId <= 0) return;
 
-  const redis = getRedis();
-  if (redis) {
-    await setInRedis(redis, orderId, read);
+  const backend = await getRedisBackend();
+  if (backend) {
+    await setInRedis(backend, orderId, read);
     return;
   }
 
