@@ -14,8 +14,8 @@ import {
   appInstallStatusLabel,
   isAppInstallReason,
   isAppInstallStatus,
+  normalizeAppInstallStatus,
   type AppInstallReason,
-  type AppInstallStatus,
 } from '../models/app-install.model.js';
 import {
   fetchOdooContactById,
@@ -49,20 +49,21 @@ function mapDoc(doc: {
   odooPartnerId: number;
   partnerName?: string | null;
   partnerPhone?: string | null;
-  status: AppInstallStatus;
+  status: string;
   reason?: AppInstallReason | null;
   requestedAt?: Date | null;
   updatedAt?: Date | null;
   updatedByEmail?: string | null;
   updatedByName?: string | null;
 }) {
+  const status = normalizeAppInstallStatus(doc.status);
   return {
     id: String(doc.odooPartnerId),
     odooPartnerId: String(doc.odooPartnerId),
     name: doc.partnerName || '',
     phone: doc.partnerPhone || '',
-    status: doc.status,
-    statusLabel: appInstallStatusLabel(doc.status),
+    status,
+    statusLabel: appInstallStatusLabel(status),
     reason: doc.reason ?? null,
     reasonLabel: appInstallReasonLabel(doc.reason),
     requestedAt: doc.requestedAt?.toISOString?.() ?? null,
@@ -85,6 +86,27 @@ router.get('/meta', (_req, res) => {
       })),
     },
   });
+});
+
+/** Sidebar badge: count of Not installed call requests (open follow-ups). */
+router.get('/badge', async (_req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  try {
+    await connectMongo();
+    const notInstalledCount = await AppInstallModel.countDocuments({
+      status: 'not_installed',
+    });
+    return res.json({
+      data: {
+        notInstalledCount,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load call list badge.';
+    console.error('[app-installs] badge', message);
+    return res.status(500).json({ message });
+  }
 });
 
 /** Map of odooPartnerId -> install record (for Contact list badges). */
@@ -205,7 +227,7 @@ router.post('/:partnerId/request', async (req: AuthRequest, res) => {
       odooPartnerId: partnerId,
       partnerName: toStringValue(contact.name),
       partnerPhone: toStringValue(contact.phone),
-      status: 'not_called',
+      status: 'not_installed',
       reason: null,
       requestedAt: new Date(),
       updatedByEmail: req.user?.email ?? '',
@@ -241,12 +263,15 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
 
   let reason: AppInstallReason | null = null;
   if (statusRaw === 'not_installed') {
-    if (!isAppInstallReason(req.body?.reason)) {
-      return res.status(400).json({
-        message: `Reason required for not_installed. Use one of: ${APP_INSTALL_REASONS.join(', ')}`,
-      });
+    // Reason optional when first requested; required only when a reason is sent.
+    if (req.body?.reason != null && req.body.reason !== '') {
+      if (!isAppInstallReason(req.body.reason)) {
+        return res.status(400).json({
+          message: `Invalid reason. Use one of: ${APP_INSTALL_REASONS.join(', ')}`,
+        });
+      }
+      reason = req.body.reason;
     }
-    reason = req.body.reason;
   }
 
   try {
@@ -269,12 +294,13 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
       });
     } else {
       doc.status = statusRaw;
-      doc.reason = reason;
+      if (statusRaw === 'installed') {
+        doc.reason = null;
+      } else if (reason) {
+        doc.reason = reason;
+      }
       doc.updatedByEmail = req.user?.email ?? '';
       doc.updatedByName = req.user?.name ?? '';
-      if (statusRaw === 'installed' || statusRaw === 'not_called') {
-        doc.reason = null;
-      }
       await doc.save();
     }
 

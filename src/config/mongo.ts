@@ -5,11 +5,14 @@
  */
 import mongoose from 'mongoose';
 
+import { migrateLegacyNotCalledStatus } from '../models/app-install.model.js';
 import { env } from './env.js';
 
 declare global {
   // eslint-disable-next-line no-var
   var __qrShopMongoConn: typeof mongoose | undefined;
+  // eslint-disable-next-line no-var
+  var __qrShopMongoMigrated: boolean | undefined;
 }
 
 export function getMongoUri(): string {
@@ -27,6 +30,10 @@ export function getMongoUri(): string {
 export async function connectMongo(): Promise<typeof mongoose> {
   const existing = globalThis.__qrShopMongoConn;
   if (existing && existing.connection.readyState === 1) {
+    if (!globalThis.__qrShopMongoMigrated) {
+      await migrateLegacyNotCalledStatus();
+      globalThis.__qrShopMongoMigrated = true;
+    }
     return existing;
   }
 
@@ -43,6 +50,8 @@ export async function connectMongo(): Promise<typeof mongoose> {
     maxPoolSize: env.nodeEnv === 'production' ? 5 : 10,
   });
   globalThis.__qrShopMongoConn = conn;
+  await migrateLegacyNotCalledStatus();
+  globalThis.__qrShopMongoMigrated = true;
   return conn;
 }
 

@@ -4,11 +4,12 @@
  *
  * Use default mongoose import: named ESM exports like `models`/`model`
  * break on Vercel’s Node ESM loader (“does not provide an export named 'models'”).
+ *
+ * Statuses: not_installed | installed (legacy `not_called` rows are deleted on connect).
  */
 import mongoose, { Schema, type InferSchemaType, type Model } from 'mongoose';
 
 export const APP_INSTALL_STATUSES = [
-  'not_called',
   'not_installed',
   'installed',
 ] as const;
@@ -37,7 +38,7 @@ const AppInstallSchema = new Schema(
     status: {
       type: String,
       enum: APP_INSTALL_STATUSES,
-      default: 'not_called',
+      default: 'not_installed',
       index: true,
     },
     reason: {
@@ -64,6 +65,11 @@ export const AppInstallModel: Model<AppInstallDoc> =
   (mongoose.models.AppInstall as Model<AppInstallDoc>) ||
   mongoose.model<AppInstallDoc>('AppInstall', AppInstallSchema);
 
+/** Remove legacy Not called rows from Call List (status retired). */
+export async function migrateLegacyNotCalledStatus(): Promise<void> {
+  await AppInstallModel.deleteMany({ status: 'not_called' });
+}
+
 export function isAppInstallStatus(value: unknown): value is AppInstallStatus {
   return (
     typeof value === 'string' &&
@@ -78,15 +84,14 @@ export function isAppInstallReason(value: unknown): value is AppInstallReason {
   );
 }
 
+export function normalizeAppInstallStatus(value: unknown): AppInstallStatus {
+  if (value === 'installed') return 'installed';
+  // Legacy not_called and unknown values → not_installed
+  return 'not_installed';
+}
+
 export function appInstallStatusLabel(status: AppInstallStatus): string {
-  switch (status) {
-    case 'installed':
-      return 'Installed';
-    case 'not_installed':
-      return 'Not installed';
-    default:
-      return 'Not called';
-  }
+  return status === 'installed' ? 'Installed' : 'Not installed';
 }
 
 export function appInstallReasonLabel(reason: AppInstallReason | null | undefined): string {
