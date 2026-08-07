@@ -2640,6 +2640,9 @@ export async function fetchOdooPurchaseOrderDetailBundle(
 
 /* ─── Sale Order (sale.order confirmed: sale / done) — view only ─── */
 
+/** Studio boolean on sale.order — shared App Order read state for the whole team. */
+export const APP_ORDER_READ_FIELD = 'x_studio_app_order_read';
+
 export type OdooSaleOrder = {
   id: number;
   name: string;
@@ -2653,6 +2656,8 @@ export type OdooSaleOrder = {
   x_studio_sale_person_name?: string | false;
   /** Studio many2one Salesperson (`res.users`) — used for App Order matching. */
   x_studio_salesperson?: [number, string] | false;
+  /** Studio boolean — true = read by team (shared across devices/users). */
+  x_studio_app_order_read?: boolean;
 };
 
 export type OdooSaleOrderDetail = OdooSaleOrder & {
@@ -2686,7 +2691,49 @@ const SALE_ORDER_LIST_FIELDS = [
   'x_studio_phonenumber',
   'x_studio_sale_person_name',
   'x_studio_salesperson',
+  APP_ORDER_READ_FIELD,
 ];
+
+export function isOdooAppOrderRead(
+  order: Pick<OdooSaleOrder, 'x_studio_app_order_read'>,
+): boolean {
+  return Boolean(order.x_studio_app_order_read);
+}
+
+/**
+ * Persist App Order read/unread on Odoo (shared for all users/devices).
+ * Requires Studio boolean field `x_studio_app_order_read` on sale.order.
+ */
+export async function setOdooAppOrderRead(
+  userId: string,
+  saleOrderId: number,
+  read: boolean,
+): Promise<void> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
+    throw new Error('Invalid app order id.');
+  }
+
+  try {
+    await writeOdooRecordAsUser(session, 'sale.order', saleOrderId, {
+      [APP_ORDER_READ_FIELD]: read,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      message.toLowerCase().includes(APP_ORDER_READ_FIELD) ||
+      message.toLowerCase().includes('invalid field')
+    ) {
+      throw new Error(
+        `Missing Odoo Studio field "${APP_ORDER_READ_FIELD}" on sale.order. Create a Boolean field with that technical name, then try again.`,
+      );
+    }
+    throw error;
+  }
+}
 
 const SALE_ORDER_DETAIL_FIELDS = [
   ...SALE_ORDER_LIST_FIELDS,
@@ -2787,10 +2834,19 @@ export async function fetchOdooSaleOrderById(
       SALE_ORDER_LIST_FIELDS,
     );
   } catch (error) {
-    console.error(
-      '[sale-orders] Failed to read sale order:',
-      error instanceof Error ? error.message : error,
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      message.toLowerCase().includes(APP_ORDER_READ_FIELD) ||
+      message.toLowerCase().includes('invalid field')
+    ) {
+      return readOdooRecordAsUser<OdooSaleOrderDetail>(
+        session,
+        'sale.order',
+        saleOrderId,
+        SALE_ORDER_LIST_FIELDS.filter(f => f !== APP_ORDER_READ_FIELD),
+      );
+    }
+    console.error('[sale-orders] Failed to read sale order:', message);
     throw error instanceof Error
       ? error
       : new Error('Failed to load sale order.');
@@ -2981,14 +3037,31 @@ export async function fetchOdooOnlineOrders(
       { order: 'date_order desc, id desc', limit, offset },
     );
   } catch (error) {
-    // Older DBs may lack x_studio_salesperson — fall back to Quotation Sent only.
+    // Older DBs may lack Studio fields used only for App Order.
     const message = error instanceof Error ? error.message : String(error);
+    const lower = message.toLowerCase();
+
+    // Prefer keeping App Order OR-domain when only the read field is missing.
+    if (lower.includes(APP_ORDER_READ_FIELD)) {
+      console.warn(
+        '[online-orders] x_studio_app_order_read unavailable; listing without it:',
+        message,
+      );
+      return searchReadOdooRecords<OdooSaleOrder>(
+        session,
+        'sale.order',
+        domain,
+        SALE_ORDER_LIST_FIELDS.filter(f => f !== APP_ORDER_READ_FIELD),
+        { order: 'date_order desc, id desc', limit, offset },
+      );
+    }
+
     if (
-      message.toLowerCase().includes('x_studio_salesperson') ||
-      message.toLowerCase().includes('invalid field')
+      lower.includes('x_studio_salesperson') ||
+      lower.includes('invalid field')
     ) {
       console.warn(
-        '[online-orders] x_studio_salesperson unavailable, using state=sent only:',
+        '[online-orders] Retrying list without unavailable Studio fields:',
         message,
       );
       const fallbackDomain: unknown[] = [['state', '=', 'sent']];
@@ -3007,7 +3080,9 @@ export async function fetchOdooOnlineOrders(
         session,
         'sale.order',
         fallbackDomain,
-        SALE_ORDER_LIST_FIELDS.filter(f => f !== 'x_studio_salesperson'),
+        SALE_ORDER_LIST_FIELDS.filter(
+          f => f !== 'x_studio_salesperson' && f !== APP_ORDER_READ_FIELD,
+        ),
         { order: 'date_order desc, id desc', limit, offset },
       );
     }
