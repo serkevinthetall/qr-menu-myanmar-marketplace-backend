@@ -313,4 +313,27 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
   }
 });
 
+/** Remove contact from Call List (undo accidental Request). */
+router.delete('/:partnerId', async (req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  const partnerId = Number(req.params.partnerId);
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    return res.status(400).json({ message: 'Invalid contact id.' });
+  }
+
+  try {
+    await connectMongo();
+    const result = await AppInstallModel.deleteOne({ odooPartnerId: partnerId });
+    if (!result.deletedCount) {
+      return res.status(404).json({ message: 'Call list entry not found.' });
+    }
+    return res.json({ data: { odooPartnerId: String(partnerId), removed: true } });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to remove from call list.';
+    console.error('[app-installs] delete', message);
+    return res.status(500).json({ message });
+  }
+});
+
 export default router;
