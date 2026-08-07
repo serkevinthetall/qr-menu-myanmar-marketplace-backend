@@ -5,12 +5,13 @@
  * Use default mongoose import: named ESM exports like `models`/`model`
  * break on Vercel’s Node ESM loader (“does not provide an export named 'models'”).
  *
- * Statuses: not_installed | installed (legacy `not_called` rows are deleted on connect).
+ * Statuses: not_installed | waiting | installed (legacy `not_called` rows deleted on connect).
  */
 import mongoose, { Schema, type InferSchemaType, type Model } from 'mongoose';
 
 export const APP_INSTALL_STATUSES = [
   'not_installed',
+  'waiting',
   'installed',
 ] as const;
 
@@ -87,12 +88,20 @@ export function isAppInstallReason(value: unknown): value is AppInstallReason {
 
 export function normalizeAppInstallStatus(value: unknown): AppInstallStatus {
   if (value === 'installed') return 'installed';
+  if (value === 'waiting') return 'waiting';
   // Legacy not_called and unknown values → not_installed
   return 'not_installed';
 }
 
 export function appInstallStatusLabel(status: AppInstallStatus): string {
-  return status === 'installed' ? 'Installed' : 'Not installed';
+  switch (status) {
+    case 'installed':
+      return 'Installed';
+    case 'waiting':
+      return 'Waiting';
+    default:
+      return 'Not installed';
+  }
 }
 
 export function appInstallReasonLabel(reason: AppInstallReason | null | undefined): string {
