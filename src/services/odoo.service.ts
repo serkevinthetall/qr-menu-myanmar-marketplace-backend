@@ -57,6 +57,7 @@ export type OdooContact = {
   name: string;
   email: string | false;
   phone: string | false;
+  mobile?: string | false;
   city: string | false;
   function: string | false;
   is_company: boolean;
@@ -69,6 +70,7 @@ const CONTACT_BASE_FIELDS = [
   'name',
   'email',
   'phone',
+  'mobile',
   'city',
   'function',
   'is_company',
