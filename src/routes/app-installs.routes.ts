@@ -296,7 +296,12 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
       });
     } else {
       doc.status = statusRaw;
-      if (statusRaw === 'installed' || statusRaw === 'waiting' || statusRaw === 'new') {
+      if (
+        statusRaw === 'installed' ||
+        statusRaw === 'waiting' ||
+        statusRaw === 'please_come_and_install' ||
+        statusRaw === 'new'
+      ) {
         doc.reason = null;
       } else if (reason) {
         doc.reason = reason;
