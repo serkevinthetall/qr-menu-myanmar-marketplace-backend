@@ -88,17 +88,19 @@ router.get('/meta', (_req, res) => {
   });
 });
 
-/** Sidebar badge: count of Not installed call requests (open follow-ups). */
+/** Sidebar badge: count of New call requests. */
 router.get('/badge', async (_req: AuthRequest, res) => {
   if (!requireMongo(res)) return;
   try {
     await connectMongo();
-    const notInstalledCount = await AppInstallModel.countDocuments({
-      status: 'not_installed',
+    const newCount = await AppInstallModel.countDocuments({
+      status: 'new',
     });
     return res.json({
       data: {
-        notInstalledCount,
+        newCount,
+        // Kept for older frontends during deploy overlap.
+        notInstalledCount: newCount,
       },
     });
   } catch (error) {
@@ -227,7 +229,7 @@ router.post('/:partnerId/request', async (req: AuthRequest, res) => {
       odooPartnerId: partnerId,
       partnerName: toStringValue(contact.name),
       partnerPhone: toStringValue(contact.phone),
-      status: 'not_installed',
+      status: 'new',
       reason: null,
       requestedAt: new Date(),
       updatedByEmail: req.user?.email ?? '',
@@ -294,7 +296,7 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
       });
     } else {
       doc.status = statusRaw;
-      if (statusRaw === 'installed' || statusRaw === 'waiting') {
+      if (statusRaw === 'installed' || statusRaw === 'waiting' || statusRaw === 'new') {
         doc.reason = null;
       } else if (reason) {
         doc.reason = reason;
