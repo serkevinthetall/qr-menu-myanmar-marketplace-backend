@@ -85,8 +85,7 @@ router.get('/', async (req: AuthRequest, res) => {
         id: String(contact.id),
         name: contact.name,
         email: toStringValue(contact.email),
-        phone:
-          toStringValue(contact.phone) || toStringValue(contact.mobile),
+        phone: toStringValue(contact.phone),
         city: toStringValue(contact.city),
         jobPosition: toStringValue(contact.function),
         company: toRelationName(contact.parent_id),
@@ -514,8 +513,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
       relatedCompany: toRelationName(contact.parent_id),
       relatedCompanyId: toRelationId(contact.parent_id) || null,
       email: toStringValue(contact.email),
-      phone:
-        toStringValue(contact.phone) || toStringValue(contact.mobile),
+      phone: toStringValue(contact.phone),
       street: toStringValue(contact.street),
       street2: toStringValue(contact.street2),
       township: location.township,
