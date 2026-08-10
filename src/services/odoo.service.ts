@@ -134,6 +134,7 @@ const CONTACT_DETAIL_FIELDS = [
   'parent_id',
   'email',
   'phone',
+  'mobile',
   'street',
   'street2',
   'city',
@@ -151,6 +152,7 @@ type OdooContactDetail = {
   parent_id: [number, string] | false;
   email: string | false;
   phone: string | false;
+  mobile?: string | false;
   street: string | false;
   street2: string | false;
   city: string | false;
