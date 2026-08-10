@@ -2454,37 +2454,37 @@ export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> 
     ...CONTACT_EXTRA_FIELDS,
   ];
 
-  const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Cookie: session.cookie,
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'call',
-      params: {
-        model: 'res.partner',
-        method: 'search_read',
-        args: [[], fields],
-        kwargs: {
-          order: 'name asc',
-          limit: 1000,
-        },
+  // Odoo search_read is capped per call; page until exhausted so Contacts
+  // is not stuck at the old hard limit of 1000.
+  const pageSize = 500;
+  const maxPages = 100;
+  const all: OdooContact[] = [];
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const rows = await searchReadOdooRecords<OdooContact>(
+      session,
+      'res.partner',
+      [],
+      fields,
+      {
+        order: 'name asc',
+        limit: pageSize,
+        offset: page * pageSize,
       },
-      id: Date.now(),
-    }),
-  });
+    );
 
-  const data = (await response.json()) as JsonRpcResponse<OdooContact[]>;
+    if (!rows.length) {
+      break;
+    }
 
-  if (data.error) {
-    const message =
-      data.error.data?.message ?? data.error.message ?? 'Failed to load contacts.';
-    throw new Error(message);
+    all.push(...rows);
+
+    if (rows.length < pageSize) {
+      break;
+    }
   }
 
-  return data.result ?? [];
+  return all;
 }
 
 /** Lean contact list for New Quotation — fewer fields, customers only. */
