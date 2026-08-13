@@ -59,6 +59,10 @@ function mapDoc(doc: {
 }) {
   const status = normalizeAppInstallStatus(doc.status);
   const reasonNote = toStringValue(doc.reasonNote);
+  const reasonLabel =
+    status === 'waiting'
+      ? reasonNote
+      : appInstallReasonLabel(doc.reason, reasonNote);
   return {
     id: String(doc.odooPartnerId),
     odooPartnerId: String(doc.odooPartnerId),
@@ -68,7 +72,7 @@ function mapDoc(doc: {
     statusLabel: appInstallStatusLabel(status),
     reason: doc.reason ?? null,
     reasonNote,
-    reasonLabel: appInstallReasonLabel(doc.reason, reasonNote),
+    reasonLabel,
     requestedAt: doc.requestedAt?.toISOString?.() ?? null,
     updatedAt: doc.updatedAt?.toISOString?.() ?? null,
     updatedByEmail: doc.updatedByEmail || '',
@@ -286,6 +290,13 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
         }
       }
     }
+  } else if (statusRaw === 'waiting') {
+    reasonNote = toStringValue(req.body?.reasonNote).trim().slice(0, 500);
+    if (!reasonNote) {
+      return res.status(400).json({
+        message: 'Please type a note for Waiting.',
+      });
+    }
   }
 
   try {
@@ -311,12 +322,14 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
       doc.status = statusRaw;
       if (
         statusRaw === 'installed' ||
-        statusRaw === 'waiting' ||
         statusRaw === 'please_come_and_install' ||
         statusRaw === 'new'
       ) {
         doc.reason = null;
         doc.reasonNote = '';
+      } else if (statusRaw === 'waiting') {
+        doc.reason = null;
+        doc.reasonNote = reasonNote;
       } else if (reason) {
         doc.reason = reason;
         doc.reasonNote = reason === 'other' ? reasonNote : '';
