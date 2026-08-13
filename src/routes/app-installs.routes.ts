@@ -51,12 +51,14 @@ function mapDoc(doc: {
   partnerPhone?: string | null;
   status: string;
   reason?: AppInstallReason | null;
+  reasonNote?: string | null;
   requestedAt?: Date | null;
   updatedAt?: Date | null;
   updatedByEmail?: string | null;
   updatedByName?: string | null;
 }) {
   const status = normalizeAppInstallStatus(doc.status);
+  const reasonNote = toStringValue(doc.reasonNote);
   return {
     id: String(doc.odooPartnerId),
     odooPartnerId: String(doc.odooPartnerId),
@@ -65,7 +67,8 @@ function mapDoc(doc: {
     status,
     statusLabel: appInstallStatusLabel(status),
     reason: doc.reason ?? null,
-    reasonLabel: appInstallReasonLabel(doc.reason),
+    reasonNote,
+    reasonLabel: appInstallReasonLabel(doc.reason, reasonNote),
     requestedAt: doc.requestedAt?.toISOString?.() ?? null,
     updatedAt: doc.updatedAt?.toISOString?.() ?? null,
     updatedByEmail: doc.updatedByEmail || '',
@@ -264,6 +267,7 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
   }
 
   let reason: AppInstallReason | null = null;
+  let reasonNote = '';
   if (statusRaw === 'not_installed') {
     // Reason optional when first requested; required only when a reason is sent.
     if (req.body?.reason != null && req.body.reason !== '') {
@@ -273,6 +277,14 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
         });
       }
       reason = req.body.reason;
+      if (reason === 'other') {
+        reasonNote = toStringValue(req.body?.reasonNote).trim().slice(0, 500);
+        if (!reasonNote) {
+          return res.status(400).json({
+            message: 'Please type a reason when selecting Other.',
+          });
+        }
+      }
     }
   }
 
@@ -290,6 +302,7 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
         partnerPhone: toStringValue(contact.phone),
         status: statusRaw,
         reason,
+        reasonNote,
         requestedAt: new Date(),
         updatedByEmail: req.user?.email ?? '',
         updatedByName: req.user?.name ?? '',
@@ -303,8 +316,10 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
         statusRaw === 'new'
       ) {
         doc.reason = null;
+        doc.reasonNote = '';
       } else if (reason) {
         doc.reason = reason;
+        doc.reasonNote = reason === 'other' ? reasonNote : '';
       }
       doc.updatedByEmail = req.user?.email ?? '';
       doc.updatedByName = req.user?.name ?? '';
@@ -335,12 +350,12 @@ router.delete('/:partnerId', async (req: AuthRequest, res) => {
       odooPartnerId: partnerId,
     });
     if (!result.deletedCount) {
-      return res.status(404).json({ message: 'Call list entry not found.' });
+      return res.status(404).json({ message: 'App User List entry not found.' });
     }
     return res.json({ data: { odooPartnerId: String(partnerId), removed: true } });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : 'Failed to remove from call list.';
+      error instanceof Error ? error.message : 'Failed to remove from App User List.';
     console.error('[app-installs] delete', message);
     return res.status(500).json({ message });
   }

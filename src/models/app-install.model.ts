@@ -51,6 +51,8 @@ const AppInstallSchema = new Schema(
       default: null,
       required: false,
     },
+    /** Free-text detail when reason is `other`. */
+    reasonNote: { type: String, default: '' },
     requestedAt: { type: Date, default: Date.now },
     updatedByEmail: { type: String, default: '' },
     updatedByName: { type: String, default: '' },
@@ -113,7 +115,10 @@ export function appInstallStatusLabel(status: AppInstallStatus): string {
   }
 }
 
-export function appInstallReasonLabel(reason: AppInstallReason | null | undefined): string {
+export function appInstallReasonLabel(
+  reason: AppInstallReason | null | undefined,
+  reasonNote?: string | null,
+): string {
   switch (reason) {
     case 'no_smartphone':
       return 'No smartphone';
@@ -121,8 +126,10 @@ export function appInstallReasonLabel(reason: AppInstallReason | null | undefine
       return 'Not interested';
     case 'will_install_later':
       return 'Will install later';
-    case 'other':
-      return 'Other';
+    case 'other': {
+      const note = String(reasonNote ?? '').trim();
+      return note || 'Other';
+    }
     default:
       return '';
   }
