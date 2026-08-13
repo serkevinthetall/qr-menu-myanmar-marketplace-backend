@@ -3411,6 +3411,117 @@ export async function fetchOdooOnlineOrders(
   }
 }
 
+export type AppOrderPartnerStat = {
+  count: number;
+  lastOrderNumber: string;
+  lastOrderDate: string;
+};
+
+/**
+ * Count App Orders per partner (and capture the latest order number/date).
+ * Used by App User List badges beside customer names.
+ */
+export async function fetchAppOrderStatsByPartnerIds(
+  userId: string,
+  partnerIds: number[],
+): Promise<Map<number, AppOrderPartnerStat>> {
+  const stats = new Map<number, AppOrderPartnerStat>();
+  const ids = [
+    ...new Set(
+      partnerIds.filter(id => Number.isFinite(id) && id > 0).map(id => Math.floor(id)),
+    ),
+  ];
+  if (!ids.length) {
+    return stats;
+  }
+
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const administratorUserId = await resolveAdministratorUserId(session);
+  const baseDomain = buildAppOrderDomain(administratorUserId);
+  const fields = ['partner_id', 'name', 'date_order'] as const;
+  const pageSize = 500;
+  const maxPages = 20;
+
+  const readPage = async (
+    domain: unknown[],
+    offset: number,
+  ): Promise<
+    Array<{
+      id: number;
+      partner_id: [number, string] | false;
+      name: string | false;
+      date_order: string | false;
+    }>
+  > =>
+    searchReadOdooRecords(session, 'sale.order', domain, [...fields], {
+      order: 'date_order desc, id desc',
+      limit: pageSize,
+      offset,
+    });
+
+  try {
+    for (let page = 0; page < maxPages; page += 1) {
+      const domain: unknown[] = [...baseDomain, ['partner_id', 'in', ids]];
+      let rows: Awaited<ReturnType<typeof readPage>>;
+      try {
+        rows = await readPage(domain, page * pageSize);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          message.toLowerCase().includes('x_studio_salesperson') ||
+          message.toLowerCase().includes('invalid field')
+        ) {
+          rows = await readPage(
+            [['state', '=', 'sent'], ['partner_id', 'in', ids]],
+            page * pageSize,
+          );
+        } else {
+          throw error;
+        }
+      }
+
+      if (!rows.length) {
+        break;
+      }
+
+      for (const row of rows) {
+        const partnerId = Array.isArray(row.partner_id)
+          ? Number(row.partner_id[0])
+          : 0;
+        if (!partnerId) {
+          continue;
+        }
+        const existing = stats.get(partnerId);
+        if (!existing) {
+          stats.set(partnerId, {
+            count: 1,
+            lastOrderNumber: String(row.name || ''),
+            lastOrderDate: String(row.date_order || ''),
+          });
+        } else {
+          existing.count += 1;
+        }
+      }
+
+      if (rows.length < pageSize) {
+        break;
+      }
+    }
+  } catch (error) {
+    // Don't fail the whole App User List if order stats cannot load.
+    console.error(
+      '[app-installs] app-order stats',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  return stats;
+}
+
 export async function fetchOdooOnlineOrderDetailBundle(
   userId: string,
   saleOrderId: number,

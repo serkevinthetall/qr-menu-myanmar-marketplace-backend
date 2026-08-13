@@ -20,6 +20,7 @@ import {
 import {
   fetchOdooContactById,
   fetchOdooContactsByIds,
+  fetchAppOrderStatsByPartnerIds,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 
@@ -163,7 +164,10 @@ router.get('/', async (req: AuthRequest, res) => {
       .lean();
 
     const partnerIds = rows.map(row => row.odooPartnerId);
-    const contacts = await fetchOdooContactsByIds(req.user!.id, partnerIds);
+    const [contacts, appOrderStats] = await Promise.all([
+      fetchOdooContactsByIds(req.user!.id, partnerIds),
+      fetchAppOrderStatsByPartnerIds(req.user!.id, partnerIds),
+    ]);
     const contactById = new Map(contacts.map(c => [c.id, c]));
 
     let data = rows.map(row => {
@@ -172,6 +176,7 @@ router.get('/', async (req: AuthRequest, res) => {
         (contact ? toStringValue(contact.name) : '') || row.partnerName || '';
       const phone =
         (contact ? toStringValue(contact.phone) : '') || row.partnerPhone || '';
+      const orderStat = appOrderStats.get(row.odooPartnerId);
       return {
         ...mapDoc(row as never),
         name,
@@ -183,6 +188,9 @@ router.get('/', async (req: AuthRequest, res) => {
                 : '',
             )
           : '',
+        appOrderCount: orderStat?.count ?? 0,
+        lastAppOrderNumber: orderStat?.lastOrderNumber ?? '',
+        lastAppOrderDate: orderStat?.lastOrderDate ?? '',
       };
     });
 
