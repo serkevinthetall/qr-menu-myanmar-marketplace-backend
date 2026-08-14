@@ -2835,6 +2835,178 @@ export async function fetchOdooMembershipCouponTicketById(
   );
 }
 
+/* ─── Membership Application / Member Request (x_membership_applicati) ─── */
+
+export const MEMBERSHIP_APPLICATION_MODEL = 'x_membership_applicati';
+
+export const MEMBER_REQUEST_STATUSES = [
+  'Requested',
+  'Approved',
+  'Rejected',
+] as const;
+
+export type MemberRequestStatus = (typeof MEMBER_REQUEST_STATUSES)[number];
+
+export const MEMBER_REQUEST_PLANS = ['Premium', 'Pro'] as const;
+
+export type OdooMembershipApplication = {
+  id: number;
+  x_studio_customer: [number, string] | false;
+  x_studio_selection_field_2c0_1jvv3u0te: string | false;
+  x_studio_name: string | false;
+  x_studio_phone: string | false;
+  x_studio_email: string | false;
+  x_studio_status: string | false;
+  x_studio_requested_at: string | false;
+  x_studio_notes_1: string | false;
+};
+
+const MEMBERSHIP_APPLICATION_FIELDS = [
+  'id',
+  'x_studio_customer',
+  'x_studio_selection_field_2c0_1jvv3u0te',
+  'x_studio_name',
+  'x_studio_phone',
+  'x_studio_email',
+  'x_studio_status',
+  'x_studio_requested_at',
+  'x_studio_notes_1',
+];
+
+export function isMemberRequestStatus(value: unknown): value is MemberRequestStatus {
+  return (
+    typeof value === 'string' &&
+    (MEMBER_REQUEST_STATUSES as readonly string[]).includes(value)
+  );
+}
+
+export async function fetchOdooMembershipApplications(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+    status?: string;
+  },
+): Promise<OdooMembershipApplication[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [];
+  const status = String(options?.status ?? '').trim();
+  if (status) {
+    domain.push(['x_studio_status', '=', status]);
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push('|');
+    domain.push('|');
+    domain.push('|');
+    domain.push('|');
+    domain.push(['x_studio_name', 'ilike', q]);
+    domain.push(['x_studio_phone', 'ilike', q]);
+    domain.push(['x_studio_email', 'ilike', q]);
+    domain.push(['x_studio_customer', 'ilike', q]);
+    domain.push(['x_studio_notes_1', 'ilike', q]);
+  }
+
+  return searchReadOdooRecords<OdooMembershipApplication>(
+    session,
+    MEMBERSHIP_APPLICATION_MODEL,
+    domain,
+    MEMBERSHIP_APPLICATION_FIELDS,
+    { order: 'x_studio_requested_at desc, id desc', limit, offset },
+  );
+}
+
+export async function countOdooMembershipApplications(
+  userId: string,
+  options?: { status?: string },
+): Promise<number> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const domain: unknown[] = [];
+  const status = String(options?.status ?? '').trim();
+  if (status) {
+    domain.push(['x_studio_status', '=', status]);
+  }
+
+  try {
+    if (env.odooApiKey) {
+      const count = await odooExecuteKw<number>(
+        session.uid,
+        MEMBERSHIP_APPLICATION_MODEL,
+        'search_count',
+        [domain],
+      );
+      if (typeof count === 'number' && Number.isFinite(count)) {
+        return count;
+      }
+    }
+  } catch {
+    // Fall through to session cookie call.
+  }
+
+  return odooCallKw<number>(
+    session.cookie,
+    MEMBERSHIP_APPLICATION_MODEL,
+    'search_count',
+    [domain],
+  );
+}
+
+export async function fetchOdooMembershipApplicationById(
+  userId: string,
+  applicationId: number,
+): Promise<OdooMembershipApplication | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  return readOdooRecordAsUser<OdooMembershipApplication>(
+    session,
+    MEMBERSHIP_APPLICATION_MODEL,
+    applicationId,
+    MEMBERSHIP_APPLICATION_FIELDS,
+  );
+}
+
+export async function updateOdooMembershipApplicationStatus(
+  userId: string,
+  applicationId: number,
+  status: MemberRequestStatus,
+): Promise<OdooMembershipApplication> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  await writeOdooRecordAsUser(session, MEMBERSHIP_APPLICATION_MODEL, applicationId, {
+    x_studio_status: status,
+  });
+
+  const updated = await fetchOdooMembershipApplicationById(userId, applicationId);
+  if (!updated) {
+    throw new Error('Member request not found after update.');
+  }
+  return updated;
+}
+
 /* ─── Purchase Order (purchase.order) ─── */
 
 export type OdooPurchaseOrder = {
