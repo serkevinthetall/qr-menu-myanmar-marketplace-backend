@@ -331,6 +331,7 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
       if (
         statusRaw === 'installed' ||
         statusRaw === 'please_come_and_install' ||
+        statusRaw === 'not_pick_up' ||
         statusRaw === 'new'
       ) {
         doc.reason = null;
