@@ -2996,9 +2996,36 @@ export async function updateOdooMembershipApplicationStatus(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  await writeOdooRecordAsUser(session, MEMBERSHIP_APPLICATION_MODEL, applicationId, {
-    x_studio_status: status,
-  });
+  // Studio selection keys may be labels or lowercase / underscore keys.
+  const candidates = Array.from(
+    new Set([
+      status,
+      status.toLowerCase(),
+      status.toLowerCase().replace(/\s+/g, '_'),
+    ]),
+  );
+
+  let lastError: unknown;
+  for (const value of candidates) {
+    try {
+      await writeOdooRecordAsUser(
+        session,
+        MEMBERSHIP_APPLICATION_MODEL,
+        applicationId,
+        { x_studio_status: value },
+      );
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('Failed to update member request status.');
+  }
 
   const updated = await fetchOdooMembershipApplicationById(userId, applicationId);
   if (!updated) {
