@@ -2913,6 +2913,10 @@ function memberRequestStatusDomain(status: string): unknown[] {
   return domain;
 }
 
+function isYmd(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 export async function fetchOdooMembershipApplications(
   userId: string,
   options?: {
@@ -2920,6 +2924,8 @@ export async function fetchOdooMembershipApplications(
     offset?: number;
     q?: string;
     status?: string;
+    from?: string;
+    to?: string;
   },
 ): Promise<OdooMembershipApplication[]> {
   const session = getOdooSession(userId);
@@ -2940,6 +2946,15 @@ export async function fetchOdooMembershipApplications(
   const status = String(options?.status ?? '').trim();
   if (status) {
     domain.push(...memberRequestStatusDomain(status));
+  }
+
+  const from = String(options?.from ?? '').trim();
+  const to = String(options?.to ?? '').trim();
+  if (from && isYmd(from)) {
+    domain.push(['x_studio_requested_at', '>=', `${from} 00:00:00`]);
+  }
+  if (to && isYmd(to)) {
+    domain.push(['x_studio_requested_at', '<=', `${to} 23:59:59`]);
   }
 
   const q = options?.q?.trim();

@@ -76,12 +76,16 @@ router.get('/', async (req: AuthRequest, res) => {
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
     const q = String(req.query.q ?? '').trim();
     const status = String(req.query.status ?? '').trim();
+    const from = String(req.query.from ?? '').trim();
+    const to = String(req.query.to ?? '').trim();
 
     const rows = await fetchOdooMembershipApplications(req.user!.id, {
       limit,
       offset,
       q: q || undefined,
       status: status || undefined,
+      from: from || undefined,
+      to: to || undefined,
     });
     const data = rows.map(mapMemberRequest);
 
