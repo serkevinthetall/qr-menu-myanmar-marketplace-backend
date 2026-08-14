@@ -8,6 +8,7 @@ import {
   isMemberRequestStatus,
   MEMBER_REQUEST_PLANS,
   MEMBER_REQUEST_STATUSES,
+  normalizeMemberRequestStatus,
   updateOdooMembershipApplicationStatus,
   type OdooMembershipApplication,
 } from '../services/odoo.service.js';
@@ -21,7 +22,6 @@ import {
 const router = Router();
 
 function mapMemberRequest(row: OdooMembershipApplication) {
-  const status = toStringValue(row.x_studio_status) || 'Requested';
   return {
     id: String(row.id),
     customerId: String(toRelationId(row.x_studio_customer) || ''),
@@ -30,7 +30,7 @@ function mapMemberRequest(row: OdooMembershipApplication) {
     name: toStringValue(row.x_studio_name),
     phone: toStringValue(row.x_studio_phone),
     email: toStringValue(row.x_studio_email),
-    status,
+    status: normalizeMemberRequestStatus(row.x_studio_status),
     requestedAt: toStringValue(row.x_studio_requested_at),
     notes: toStringValue(row.x_studio_notes_1),
   };

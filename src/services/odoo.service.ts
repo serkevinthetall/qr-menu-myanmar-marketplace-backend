@@ -2880,6 +2880,39 @@ export function isMemberRequestStatus(value: unknown): value is MemberRequestSta
   );
 }
 
+/** Normalize Studio selection values (label / lowercase / underscore) to UI labels. */
+export function normalizeMemberRequestStatus(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return 'Requested';
+  const key = raw.toLowerCase().replace(/\s+/g, '_');
+  if (key === 'approved') return 'Approved';
+  if (key === 'rejected') return 'Rejected';
+  if (key === 'requested') return 'Requested';
+  return raw;
+}
+
+function memberRequestStatusDomain(status: string): unknown[] {
+  const normalized = normalizeMemberRequestStatus(status);
+  const variants = Array.from(
+    new Set([
+      normalized,
+      normalized.toLowerCase(),
+      normalized.toLowerCase().replace(/\s+/g, '_'),
+    ]),
+  );
+  if (variants.length === 1) {
+    return [['x_studio_status', '=', variants[0]]];
+  }
+  const domain: unknown[] = [];
+  for (let i = 0; i < variants.length - 1; i += 1) {
+    domain.push('|');
+  }
+  for (const variant of variants) {
+    domain.push(['x_studio_status', '=', variant]);
+  }
+  return domain;
+}
+
 export async function fetchOdooMembershipApplications(
   userId: string,
   options?: {
@@ -2906,7 +2939,7 @@ export async function fetchOdooMembershipApplications(
   const domain: unknown[] = [];
   const status = String(options?.status ?? '').trim();
   if (status) {
-    domain.push(['x_studio_status', '=', status]);
+    domain.push(...memberRequestStatusDomain(status));
   }
 
   const q = options?.q?.trim();
@@ -2943,7 +2976,7 @@ export async function countOdooMembershipApplications(
   const domain: unknown[] = [];
   const status = String(options?.status ?? '').trim();
   if (status) {
-    domain.push(['x_studio_status', '=', status]);
+    domain.push(...memberRequestStatusDomain(status));
   }
 
   try {
@@ -2996,17 +3029,35 @@ export async function updateOdooMembershipApplicationStatus(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  // Studio selection keys may be labels or lowercase / underscore keys.
-  const candidates = Array.from(
-    new Set([
-      status,
-      status.toLowerCase(),
-      status.toLowerCase().replace(/\s+/g, '_'),
-    ]),
-  );
+  // Prefer the UI label first (matches what Odoo Studio showed for this field).
+  // Only fall back to alternate keys if the first write fails.
+  const candidates: string[] = [status];
+  try {
+    const fields = await odooCallKw<
+      Record<string, { selection?: [string, string][] }>
+    >(session.cookie, MEMBERSHIP_APPLICATION_MODEL, 'fields_get', [
+      ['x_studio_status'],
+      ['selection'],
+    ]);
+    const selection = fields?.x_studio_status?.selection;
+    if (Array.isArray(selection)) {
+      const match = selection.find(
+        ([key, label]) =>
+          key === status ||
+          label === status ||
+          String(key).toLowerCase() === status.toLowerCase() ||
+          String(label).toLowerCase() === status.toLowerCase(),
+      );
+      if (match?.[0] && !candidates.includes(match[0])) {
+        candidates.unshift(match[0]);
+      }
+    }
+  } catch {
+    // fields_get optional — continue with label write.
+  }
 
   let lastError: unknown;
-  for (const value of candidates) {
+  for (const value of Array.from(new Set(candidates))) {
     try {
       await writeOdooRecordAsUser(
         session,
