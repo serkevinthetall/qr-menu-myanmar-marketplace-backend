@@ -9,6 +9,7 @@ import {
 } from '../services/ai-insights.service.js';
 import {
   fetchOverviewInsights,
+  fetchOverviewRankings,
   OverviewPeriod,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
@@ -47,6 +48,20 @@ router.get('/summary', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load overview.';
     console.error('[insights]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+/** Full customer / area rankings for Overview View detail. */
+router.get('/rankings', async (req: AuthRequest, res) => {
+  try {
+    const period = parsePeriod(req.query.period);
+    const data = await fetchOverviewRankings(req.user!.id, period);
+    return res.json({ data });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load rankings.';
+    console.error('[insights/rankings]', message);
     return res.status(500).json({ message });
   }
 });

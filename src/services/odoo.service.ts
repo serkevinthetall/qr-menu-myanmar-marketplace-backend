@@ -3825,7 +3825,15 @@ export type OverviewPeriod = 'day' | 'week' | 'month';
 type OverviewPartnerRow = {
   id: number;
   city: string | false;
+  state_id?: [number, string] | false;
   [PARTNER_TOWNSHIP_FIELD]: [number, string] | false;
+};
+
+type OverviewAreaMeta = {
+  key: string;
+  name: string;
+  stateId: number | null;
+  stateName: string;
 };
 
 type OverviewLineRow = {
@@ -3949,6 +3957,105 @@ function areaLabel(partner: OverviewPartnerRow): string {
     : '';
   const city = String(partner.city || '').trim();
   return township || city || 'Unknown area';
+}
+
+function buildLastMonthWindow(now = new Date()) {
+  const { y, m } = yangonParts(now);
+  const monthStartUtc = Date.UTC(y, m - 1, 1) - 6.5 * 60 * 60 * 1000;
+  const prevMonthStartUtc = Date.UTC(y, m - 2, 1) - 6.5 * 60 * 60 * 1000;
+  return {
+    from: new Date(prevMonthStartUtc),
+    to: new Date(monthStartUtc),
+  };
+}
+
+function partnerAreaMeta(
+  partner: OverviewPartnerRow,
+  townshipStateById: Map<number, { stateId: number; stateName: string }>,
+): OverviewAreaMeta {
+  const townshipId = odooRelationId(partner[PARTNER_TOWNSHIP_FIELD]);
+  const townshipName = odooRelationLabel(partner[PARTNER_TOWNSHIP_FIELD]);
+  const city = odooString(partner.city);
+  const name = townshipName || city || 'Unknown area';
+  const key = townshipId > 0
+    ? `township:${townshipId}`
+    : city
+      ? `city:${city.toLowerCase()}`
+      : 'unknown';
+
+  let stateId = odooRelationId(partner.state_id) || null;
+  let stateName = odooRelationLabel(partner.state_id) || '';
+  if ((!stateId || !stateName) && townshipId > 0) {
+    const fromTownship = townshipStateById.get(townshipId);
+    if (fromTownship) {
+      stateId = fromTownship.stateId || stateId;
+      stateName = fromTownship.stateName || stateName;
+    }
+  }
+  if (!stateName) {
+    stateName = 'Unknown state';
+  }
+
+  return { key, name, stateId: stateId || null, stateName };
+}
+
+async function loadPartnerAreaMetaMap(
+  session: { cookie: string; uid: number },
+  partnerIds: number[],
+): Promise<Map<number, OverviewAreaMeta>> {
+  const metaByPartner = new Map<number, OverviewAreaMeta>();
+  if (partnerIds.length === 0) {
+    return metaByPartner;
+  }
+
+  const partners = await searchReadOdooRecords<OverviewPartnerRow>(
+    session,
+    'res.partner',
+    [['id', 'in', partnerIds]],
+    ['id', 'city', 'state_id', PARTNER_TOWNSHIP_FIELD],
+    { limit: partnerIds.length },
+  );
+
+  const townshipIds = [
+    ...new Set(
+      partners
+        .map(partner => odooRelationId(partner[PARTNER_TOWNSHIP_FIELD]))
+        .filter(id => id > 0),
+    ),
+  ];
+
+  const townshipStateById = new Map<
+    number,
+    { stateId: number; stateName: string }
+  >();
+  if (townshipIds.length > 0 && env.odooTownshipModel) {
+    try {
+      const townships = await searchReadOdooRecords<OdooTownship>(
+        session,
+        env.odooTownshipModel,
+        [['id', 'in', townshipIds]],
+        ['id', 'x_name', 'x_studio_state_link'],
+        { limit: townshipIds.length },
+      );
+      for (const row of townships) {
+        const stateId = odooRelationId(row.x_studio_state_link);
+        const stateName = odooRelationLabel(row.x_studio_state_link);
+        if (stateId > 0 || stateName) {
+          townshipStateById.set(row.id, {
+            stateId: stateId || 0,
+            stateName: stateName || 'Unknown state',
+          });
+        }
+      }
+    } catch {
+      // Township enrichment is optional; partner.state_id still works.
+    }
+  }
+
+  for (const partner of partners) {
+    metaByPartner.set(partner.id, partnerAreaMeta(partner, townshipStateById));
+  }
+  return metaByPartner;
 }
 
 function sumOrders(orders: OdooSaleOrder[]): number {
@@ -4486,5 +4593,196 @@ export async function fetchOverviewInsights(
     topSpendingCustomers,
     recentOrders,
     recentPurchaseOrders,
+  };
+}
+
+export type OverviewRankingCustomer = {
+  id: string;
+  name: string;
+  total: number;
+  orders: number;
+  prevTotal: number;
+  prevOrders: number;
+};
+
+export type OverviewRankingArea = {
+  key: string;
+  name: string;
+  stateId: number | null;
+  stateName: string;
+  total: number;
+  orders: number;
+  prevTotal: number;
+  prevOrders: number;
+};
+
+export type OverviewRankingState = {
+  id: number;
+  name: string;
+};
+
+/** Full rankings for Overview View detail (customers + buying areas). */
+export async function fetchOverviewRankings(
+  userId: string,
+  period: OverviewPeriod,
+) {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const window = buildPeriodWindow(period);
+  const lastMonth = buildLastMonthWindow();
+  const fromStr = toOdooDatetime(window.from);
+  const toStr = toOdooDatetime(window.to);
+  const prevFromStr = toOdooDatetime(lastMonth.from);
+  const prevToStr = toOdooDatetime(lastMonth.to);
+
+  const saleDomain: unknown[] = [
+    ['state', 'in', ['sale', 'done']],
+    ['date_order', '>=', fromStr],
+    ['date_order', '<', toStr],
+  ];
+  const prevSaleDomain: unknown[] = [
+    ['state', 'in', ['sale', 'done']],
+    ['date_order', '>=', prevFromStr],
+    ['date_order', '<', prevToStr],
+  ];
+
+  const [saleOrders, prevSaleOrders] = await Promise.all([
+    searchReadOdooRecords<OdooSaleOrder>(
+      session,
+      'sale.order',
+      saleDomain,
+      ['id', 'amount_total', 'partner_id', 'date_order'],
+      { order: 'date_order desc, id desc', limit: 2000 },
+    ),
+    searchReadOdooRecords<OdooSaleOrder>(
+      session,
+      'sale.order',
+      prevSaleDomain,
+      ['id', 'amount_total', 'partner_id'],
+      { limit: 2000 },
+    ),
+  ]);
+
+  const partnerIds = [
+    ...new Set(
+      [...saleOrders, ...prevSaleOrders]
+        .map(order =>
+          Array.isArray(order.partner_id) ? Number(order.partner_id[0]) : 0,
+        )
+        .filter(id => id > 0),
+    ),
+  ];
+
+  const partnerMeta = await loadPartnerAreaMetaMap(session, partnerIds);
+
+  const customerSpend = new Map<
+    string,
+    OverviewRankingCustomer
+  >();
+  const areaSpend = new Map<string, OverviewRankingArea>();
+
+  const bumpCustomer = (
+    order: OdooSaleOrder,
+    field: 'current' | 'prev',
+  ) => {
+    const id = Array.isArray(order.partner_id)
+      ? String(order.partner_id[0] || '')
+      : '';
+    const name = Array.isArray(order.partner_id)
+      ? String(order.partner_id[1] || '').trim()
+      : '';
+    if (!id) {
+      return;
+    }
+    const existing = customerSpend.get(id) || {
+      id,
+      name: name || 'Unknown customer',
+      total: 0,
+      orders: 0,
+      prevTotal: 0,
+      prevOrders: 0,
+    };
+    const amount = Number(order.amount_total) || 0;
+    if (field === 'current') {
+      existing.total += amount;
+      existing.orders += 1;
+    } else {
+      existing.prevTotal += amount;
+      existing.prevOrders += 1;
+    }
+    if (name) {
+      existing.name = name;
+    }
+    customerSpend.set(id, existing);
+  };
+
+  const bumpArea = (order: OdooSaleOrder, field: 'current' | 'prev') => {
+    const partnerId = Array.isArray(order.partner_id)
+      ? Number(order.partner_id[0])
+      : 0;
+    const meta = partnerMeta.get(partnerId) || {
+      key: 'unknown',
+      name: 'Unknown area',
+      stateId: null,
+      stateName: 'Unknown state',
+    };
+    const existing = areaSpend.get(meta.key) || {
+      key: meta.key,
+      name: meta.name,
+      stateId: meta.stateId,
+      stateName: meta.stateName,
+      total: 0,
+      orders: 0,
+      prevTotal: 0,
+      prevOrders: 0,
+    };
+    const amount = Number(order.amount_total) || 0;
+    if (field === 'current') {
+      existing.total += amount;
+      existing.orders += 1;
+    } else {
+      existing.prevTotal += amount;
+      existing.prevOrders += 1;
+    }
+    areaSpend.set(meta.key, existing);
+  };
+
+  for (const order of saleOrders) {
+    bumpCustomer(order, 'current');
+    bumpArea(order, 'current');
+  }
+  for (const order of prevSaleOrders) {
+    bumpCustomer(order, 'prev');
+    bumpArea(order, 'prev');
+  }
+
+  const customers = [...customerSpend.values()].sort(
+    (a, b) => b.total - a.total || b.prevTotal - a.prevTotal,
+  );
+  const areas = [...areaSpend.values()].sort(
+    (a, b) => b.total - a.total || b.prevTotal - a.prevTotal,
+  );
+
+  const stateMap = new Map<number, string>();
+  for (const area of areas) {
+    if (area.stateId && area.stateName && area.stateName !== 'Unknown state') {
+      stateMap.set(area.stateId, area.stateName);
+    }
+  }
+  const states: OverviewRankingState[] = [...stateMap.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    period,
+    range: { from: fromStr, to: toStr },
+    compareRange: { from: prevFromStr, to: prevToStr },
+    compareLabel: 'Last month',
+    customers,
+    areas,
+    states,
   };
 }
