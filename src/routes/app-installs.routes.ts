@@ -151,12 +151,17 @@ router.get('/', async (req: AuthRequest, res) => {
   try {
     await connectMongo();
     const statusRaw = String(req.query.status ?? '').trim();
-    const statusFilter = isAppInstallStatus(statusRaw) ? statusRaw : undefined;
+    const statuses = statusRaw
+      .split(',')
+      .map(value => value.trim())
+      .filter(isAppInstallStatus);
     const q = String(req.query.q ?? '').trim().toLowerCase();
 
     const filter: Record<string, unknown> = {};
-    if (statusFilter) {
-      filter.status = statusFilter;
+    if (statuses.length === 1) {
+      filter.status = statuses[0];
+    } else if (statuses.length > 1) {
+      filter.status = { $in: statuses };
     }
 
     const rows = await AppInstallModel.find(filter)
@@ -206,7 +211,8 @@ router.get('/', async (req: AuthRequest, res) => {
       data,
       meta: {
         count: data.length,
-        status: statusFilter ?? null,
+        status: statuses.length === 1 ? statuses[0] : null,
+        statuses,
       },
     });
   } catch (error) {
