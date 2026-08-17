@@ -139,7 +139,7 @@ export const env = {
    */
   aiInsightsEnabled: (process.env.AI_INSIGHTS_ENABLED ?? 'false').toLowerCase() === 'true',
   geminiApiKey: process.env.GEMINI_API_KEY ?? '',
-  geminiModel: (process.env.GEMINI_MODEL ?? 'gemini-2.0-flash').trim(),
+  geminiModel: (process.env.GEMINI_MODEL ?? 'gemini-3.6-flash').trim(),
   groqApiKey: process.env.GROQ_API_KEY ?? '',
   groqModel: (process.env.GROQ_MODEL ?? 'llama-3.1-8b-instant').trim(),
 };
