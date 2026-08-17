@@ -1,5 +1,6 @@
 import { env } from '../config/env.js';
 import { fetchOverviewInsights } from './odoo.service.js';
+import { geminiChatJson } from './gemini.service.js';
 import { groqChatJson } from './groq.service.js';
 import {
   AiSuggestionItem,
@@ -106,6 +107,108 @@ function buildWeeklyTotals(days: DailyInsightRollup[]) {
   return [...byWeek.values()].slice(-12);
 }
 
+function yangonMonthKey(date = new Date()): string {
+  return yangonDateString(date).slice(0, 7);
+}
+
+function previousMonthKey(ym: string): string {
+  const [year, month] = ym.split('-').map(Number);
+  const prev = new Date(year, month - 2, 1);
+  return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function sumRollupsForMonth(days: DailyInsightRollup[], monthKey: string) {
+  const rows = days.filter(day => day.date.startsWith(monthKey));
+  if (rows.length === 0) {
+    return null;
+  }
+  return {
+    month: monthKey,
+    daysRecorded: rows.length,
+    saleAmount: rows.reduce((sum, row) => sum + row.saleAmount, 0),
+    saleOrders: rows.reduce((sum, row) => sum + row.saleOrders, 0),
+    purchaseAmount: rows.reduce((sum, row) => sum + row.purchaseAmount, 0),
+    purchaseOrders: rows.reduce((sum, row) => sum + row.purchaseOrders, 0),
+    buyingCustomers: rows.reduce((sum, row) => sum + row.buyingCustomers, 0),
+    quotations: rows.reduce((sum, row) => sum + row.quotations, 0),
+    itemsSold: rows.reduce((sum, row) => sum + row.itemsSold, 0),
+  };
+}
+
+function compactMonthLive(
+  monthLive: Awaited<ReturnType<typeof fetchOverviewInsights>>,
+) {
+  return {
+    range: monthLive.range,
+    saleAmount: monthLive.kpis.saleAmount.value,
+    saleAmountTrendPct: monthLive.kpis.saleAmount.trend,
+    saleOrders: monthLive.kpis.confirmedOrders.value,
+    saleOrdersTrendPct: monthLive.kpis.confirmedOrders.trend,
+    purchaseAmount: monthLive.kpis.purchaseAmount?.value ?? 0,
+    purchaseOrders: monthLive.kpis.purchaseOrders?.value ?? 0,
+    buyingCustomers: monthLive.kpis.buyingCustomers?.value ?? 0,
+    quotations: monthLive.kpis.quotations?.value ?? 0,
+    itemsSold: monthLive.kpis.itemsSold?.value ?? 0,
+    avgOrderValue: monthLive.kpis.avgOrderValue.value,
+    topAreas: (monthLive.areaChart?.series ?? [])
+      .filter(row => row.total > 0)
+      .slice(0, 12)
+      .map(row => ({
+        name: row.name,
+        total: row.total,
+      })),
+    topSpenders: (monthLive.topSpendingCustomers ?? [])
+      .filter(row => row.total > 0)
+      .slice(0, 12)
+      .map(row => ({
+        name: row.name,
+        total: row.total,
+        orders: row.orders,
+      })),
+    topProducts: (monthLive.topProducts ?? [])
+      .filter(row => row.revenue > 0)
+      .slice(0, 5)
+      .map(row => ({
+        name: row.name,
+        revenue: row.revenue,
+        qty: row.qty,
+      })),
+    bottomProducts: (monthLive.bottomProducts ?? [])
+      .filter(row => row.revenue > 0)
+      .slice(0, 5)
+      .map(row => ({
+        name: row.name,
+        revenue: row.revenue,
+        qty: row.qty,
+      })),
+    lowestOnHand: (monthLive.lowestOnHandProducts ?? []).slice(0, 3).map(row => ({
+      name: row.name,
+      onHand: row.onHand,
+    })),
+    highestDemand: (monthLive.highestDemandProducts ?? []).slice(0, 3).map(row => ({
+      name: row.name,
+      demandQty: row.demandQty,
+      onHand: row.onHand,
+    })),
+    recentSaleOrders: (monthLive.recentOrders ?? [])
+      .filter(row => row.total > 0)
+      .slice(0, 8)
+      .map(row => ({
+        number: row.number,
+        customer: row.customer,
+        total: row.total,
+      })),
+    recentPurchaseOrders: (monthLive.recentPurchaseOrders ?? [])
+      .filter(row => row.total > 0)
+      .slice(0, 8)
+      .map(row => ({
+        number: row.number,
+        vendor: row.vendor,
+        total: row.total,
+      })),
+  };
+}
+
 function normalizeSuggestions(raw: unknown): AiSuggestionItem[] {
   const list = Array.isArray((raw as { suggestions?: unknown })?.suggestions)
     ? ((raw as { suggestions: unknown[] }).suggestions)
@@ -137,98 +240,77 @@ export async function generateAiSuggestions(
   slot: AiSuggestionPack['slot'],
 ): Promise<AiSuggestionPack> {
   assertAiEnabled();
-  if (!env.groqApiKey) {
-    throw new Error('GROQ_API_KEY is not configured.');
+  if (!env.geminiApiKey && !env.groqApiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
   }
 
-  // Refresh today's notebook page before suggesting.
-  try {
-    await runDailyInsightRollup(userId);
-  } catch (error) {
-    console.warn(
-      '[ai-insights] daily rollup before suggest failed:',
-      error instanceof Error ? error.message : error,
-    );
-  }
-
-  const [history, weekLive, monthLive] = await Promise.all([
+  // Only fetch live monthly Overview when the user clicks Process.
+  const [history, monthLive] = await Promise.all([
     listDailyRollups(90),
-    fetchOverviewInsights(userId, 'week'),
     fetchOverviewInsights(userId, 'month'),
   ]);
+
+  const thisMonthKey = yangonMonthKey();
+  const lastMonthKey = previousMonthKey(thisMonthKey);
+  const monthSnapshot = compactMonthLive(monthLive);
 
   const payload = {
     business: {
       currency: 'MMK',
       timezone: 'Asia/Yangon',
       notes: [
-        'sale orders = confirmed customer sales (state sale/done)',
-        'purchase orders = confirmed vendor purchases (state purchase/done)',
+        'sale orders = confirmed customer sales with amount_total > 0',
+        'purchase orders = confirmed vendor purchases with amount_total > 0',
+        'thisMonthLive is the current calendar month in Yangon — use it as the main source.',
         'Give practical actions for a Myanmar retail / membership shop ERP.',
       ],
     },
     slot,
     weeklyTrend: buildWeeklyTotals(history),
     last14Daily: history.slice(-14),
-    thisWeekLive: {
-      saleAmount: weekLive.kpis.saleAmount.value,
-      saleOrders: weekLive.kpis.confirmedOrders.value,
-      purchaseAmount: weekLive.kpis.purchaseAmount?.value ?? 0,
-      purchaseOrders: weekLive.kpis.purchaseOrders?.value ?? 0,
-      buyingCustomers: weekLive.kpis.buyingCustomers?.value ?? 0,
-      quotations: weekLive.kpis.quotations?.value ?? 0,
-      topAreas: weekLive.areaChart.series.slice(0, 5).map(s => ({
-        name: s.name,
-        total: s.total,
-      })),
-      topProducts: weekLive.topProducts.slice(0, 3),
-      bottomProducts: weekLive.bottomProducts.slice(0, 3),
-      topSpenders: weekLive.topSpendingCustomers.slice(0, 5),
-    },
-    thisMonthLive: {
-      saleAmount: monthLive.kpis.saleAmount.value,
-      saleOrders: monthLive.kpis.confirmedOrders.value,
-      purchaseAmount: monthLive.kpis.purchaseAmount?.value ?? 0,
-      purchaseOrders: monthLive.kpis.purchaseOrders?.value ?? 0,
-    },
+    thisMonthLive: monthSnapshot,
+    lastMonthFromNotebook: sumRollupsForMonth(history, lastMonthKey),
   };
 
   const focus =
     slot === 'monday'
-      ? 'Focus on planning the coming week using last week and trends.'
+      ? 'Focus on planning the coming week using last week and trends. Still mention this month if the numbers are striking.'
       : slot === 'friday'
-        ? 'Focus on reviewing this week so far and what to fix before the weekend.'
+        ? 'Focus on reviewing this week so far and what to fix before the weekend. Mention this month if relevant.'
         : slot === 'monthly'
-          ? 'Focus on a monthly review and priorities for the new month.'
-          : 'Give balanced business suggestions from the data.';
+          ? 'This is a monthly review. Use thisMonthLive as the primary data: sales, purchases, top spenders, top buying areas, products, and stock. Compare with lastMonthFromNotebook when present. Give 3–5 priorities for the rest of this month / next month.'
+          : 'Give balanced business suggestions. Prefer thisMonthLive (monthly Overview) over daily snippets.';
 
   const system = `You are a concise business analyst for a Myanmar shop ERP.
 Return ONLY JSON with shape:
 {"suggestions":[{"title":"string","detail":"string","priority":"high|medium|low"}]}
-Give 3 to 5 actionable suggestions. No markdown. Currency is MMK.`;
+Give 3 to 5 actionable suggestions. No markdown. Currency is MMK.
+Use only the provided DATA. Prefer thisMonthLive. Quote real customer, area, and product names with MMK amounts when you mention them.`;
 
   const user = `${focus}
 
 DATA:
 ${JSON.stringify(payload)}`;
 
-  const content = await groqChatJson({ system, user });
+  const content = env.geminiApiKey
+    ? await geminiChatJson({ system, user })
+    : await groqChatJson({ system, user });
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
   } catch {
-    throw new Error('Groq returned invalid JSON.');
+    throw new Error('AI returned invalid JSON.');
   }
 
   const suggestions = normalizeSuggestions(parsed);
   if (suggestions.length === 0) {
-    throw new Error('Groq returned no usable suggestions.');
+    throw new Error('AI returned no usable suggestions.');
   }
 
   const pack: AiSuggestionPack = {
     generatedAt: new Date().toISOString(),
     slot,
-    model: env.groqModel,
+    model: env.geminiApiKey ? env.geminiModel : env.groqModel,
     suggestions,
   };
   await saveSuggestionPack(pack);
@@ -254,12 +336,12 @@ export async function getAiSuggestionsStatus(): Promise<{
     };
   }
   const latest = await loadLatestSuggestionPack();
-  const configured = Boolean(env.groqApiKey);
+  const configured = Boolean(env.geminiApiKey || env.groqApiKey);
   return {
     enabled: true,
     configured,
     latest,
-    shouldGenerate: configured && isSuggestionStale(latest, suggestedSlot),
+    shouldGenerate: false,
     suggestedSlot,
   };
 }

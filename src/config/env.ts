@@ -134,10 +134,12 @@ export const env = {
   })(),
 
   /**
-   * Optional Groq AI suggestions for Overview.
-   * Set AI_INSIGHTS_ENABLED=false (or omit) to fully disable — easy to remove later.
+   * Optional Overview AI suggestions (Gemini preferred, Groq fallback).
+   * Set AI_INSIGHTS_ENABLED=false to fully disable.
    */
   aiInsightsEnabled: (process.env.AI_INSIGHTS_ENABLED ?? 'false').toLowerCase() === 'true',
+  geminiApiKey: process.env.GEMINI_API_KEY ?? '',
+  geminiModel: (process.env.GEMINI_MODEL ?? 'gemini-2.0-flash').trim(),
   groqApiKey: process.env.GROQ_API_KEY ?? '',
   groqModel: (process.env.GROQ_MODEL ?? 'llama-3.1-8b-instant').trim(),
 };

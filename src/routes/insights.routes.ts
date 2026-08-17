@@ -5,7 +5,6 @@ import {
   generateAiSuggestions,
   getAiSuggestionsStatus,
   isAiInsightsEnabled,
-  runDailyInsightRollup,
 } from '../services/ai-insights.service.js';
 import {
   fetchOverviewInsights,
@@ -26,6 +25,11 @@ function parsePeriod(raw: unknown): OverviewPeriod {
     return value;
   }
   return 'month';
+}
+
+function parseCompare(raw: unknown): boolean {
+  const value = String(raw ?? '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'last_month';
 }
 
 function parseOrderType(raw: unknown): OverviewOrderType {
@@ -64,7 +68,10 @@ router.get('/orders', async (req: AuthRequest, res) => {
   try {
     const period = parsePeriod(req.query.period);
     const type = parseOrderType(req.query.type);
-    const data = await fetchOverviewOrders(req.user!.id, period, type);
+    const compare = parseCompare(req.query.compare);
+    const data = await fetchOverviewOrders(req.user!.id, period, type, {
+      compare,
+    });
     return res.json({ data });
   } catch (error) {
     const message =
@@ -78,7 +85,10 @@ router.get('/orders', async (req: AuthRequest, res) => {
 router.get('/rankings', async (req: AuthRequest, res) => {
   try {
     const period = parsePeriod(req.query.period);
-    const data = await fetchOverviewRankings(req.user!.id, period);
+    const compare = parseCompare(req.query.compare);
+    const data = await fetchOverviewRankings(req.user!.id, period, {
+      compare,
+    });
     return res.json({ data });
   } catch (error) {
     const message =
@@ -91,7 +101,7 @@ router.get('/rankings', async (req: AuthRequest, res) => {
 /**
  * Optional Groq AI suggestions for Overview.
  * Disable with AI_INSIGHTS_ENABLED=false. To remove later: delete this block's
- * routes + ai-insights* / groq.service files and the Overview suggestions card.
+ * routes + ai-insights* / gemini.service files and the Overview suggestions card.
  */
 router.get('/suggestions', async (_req: AuthRequest, res) => {
   try {
@@ -111,8 +121,6 @@ router.post('/suggestions/generate', async (req: AuthRequest, res) => {
   }
   try {
     const slot = parseSlot(req.body?.slot ?? req.query.slot ?? 'manual');
-    // Keep the daily notebook warm whenever a user generates tips.
-    await runDailyInsightRollup(req.user!.id).catch(() => undefined);
     const pack = await generateAiSuggestions(req.user!.id, slot);
     return res.json({ data: pack });
   } catch (error) {

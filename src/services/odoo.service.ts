@@ -3944,6 +3944,24 @@ function toOdooDatetime(date: Date): string {
   return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
+function paidSaleDomain(fromStr: string, toStr: string): unknown[] {
+  return [
+    ['state', 'in', ['sale', 'done']],
+    ['amount_total', '>', 0],
+    ['date_order', '>=', fromStr],
+    ['date_order', '<', toStr],
+  ];
+}
+
+function paidPurchaseDomain(fromStr: string, toStr: string): unknown[] {
+  return [
+    ['state', 'in', ['purchase', 'done']],
+    ['amount_total', '>', 0],
+    ['date_order', '>=', fromStr],
+    ['date_order', '<', toStr],
+  ];
+}
+
 function trendPercent(current: number, previous: number): number {
   if (!Number.isFinite(previous) || previous === 0) {
     return current > 0 ? 100 : 0;
@@ -4077,27 +4095,11 @@ export async function fetchOverviewInsights(
   const prevFromStr = toOdooDatetime(window.prevFrom);
   const prevToStr = toOdooDatetime(window.prevTo);
 
-  const saleDomain: unknown[] = [
-    ['state', 'in', ['sale', 'done']],
-    ['date_order', '>=', fromStr],
-    ['date_order', '<', toStr],
-  ];
-  const prevSaleDomain: unknown[] = [
-    ['state', 'in', ['sale', 'done']],
-    ['date_order', '>=', prevFromStr],
-    ['date_order', '<', prevToStr],
-  ];
+  const saleDomain = paidSaleDomain(fromStr, toStr);
+  const prevSaleDomain = paidSaleDomain(prevFromStr, prevToStr);
 
-  const purchaseDomain: unknown[] = [
-    ['state', 'in', ['purchase', 'done']],
-    ['date_order', '>=', fromStr],
-    ['date_order', '<', toStr],
-  ];
-  const prevPurchaseDomain: unknown[] = [
-    ['state', 'in', ['purchase', 'done']],
-    ['date_order', '>=', prevFromStr],
-    ['date_order', '<', prevToStr],
-  ];
+  const purchaseDomain = paidPurchaseDomain(fromStr, toStr);
+  const prevPurchaseDomain = paidPurchaseDomain(prevFromStr, prevToStr);
 
   const [
     saleOrders,
@@ -4463,7 +4465,10 @@ export async function fetchOverviewInsights(
     }));
   }
 
-  const recentOrders = saleOrders.slice(0, 8).map(order => ({
+  const recentOrders = saleOrders
+    .filter(order => (Number(order.amount_total) || 0) > 0)
+    .slice(0, 8)
+    .map(order => ({
     id: String(order.id),
     number: String(order.name || ''),
     customer: Array.isArray(order.partner_id)
@@ -4507,7 +4512,10 @@ export async function fetchOverviewInsights(
     .sort((a, b) => b.total - a.total)
     .slice(0, 5);
 
-  const recentPurchaseOrders = purchaseOrders.slice(0, 8).map(order => ({
+  const recentPurchaseOrders = purchaseOrders
+    .filter(order => (Number(order.amount_total) || 0) > 0)
+    .slice(0, 8)
+    .map(order => ({
     id: String(order.id),
     number: String(order.name || ''),
     vendor: Array.isArray(order.partner_id)
@@ -4626,12 +4634,14 @@ export type OverviewRankingState = {
 export async function fetchOverviewRankings(
   userId: string,
   period: OverviewPeriod,
+  options?: { compare?: boolean },
 ) {
   const session = getOdooSession(userId);
   if (!session) {
     throw new Error('Odoo session expired. Please log in again.');
   }
 
+  const compare = options?.compare === true;
   const window = buildPeriodWindow(period);
   const lastMonth = buildLastMonthWindow();
   const fromStr = toOdooDatetime(window.from);
@@ -4639,16 +4649,8 @@ export async function fetchOverviewRankings(
   const prevFromStr = toOdooDatetime(lastMonth.from);
   const prevToStr = toOdooDatetime(lastMonth.to);
 
-  const saleDomain: unknown[] = [
-    ['state', 'in', ['sale', 'done']],
-    ['date_order', '>=', fromStr],
-    ['date_order', '<', toStr],
-  ];
-  const prevSaleDomain: unknown[] = [
-    ['state', 'in', ['sale', 'done']],
-    ['date_order', '>=', prevFromStr],
-    ['date_order', '<', prevToStr],
-  ];
+  const saleDomain = paidSaleDomain(fromStr, toStr);
+  const prevSaleDomain = paidSaleDomain(prevFromStr, prevToStr);
 
   const [saleOrders, prevSaleOrders] = await Promise.all([
     searchReadOdooRecords<OdooSaleOrder>(
@@ -4658,13 +4660,15 @@ export async function fetchOverviewRankings(
       ['id', 'amount_total', 'partner_id', 'date_order'],
       { order: 'date_order desc, id desc', limit: 2000 },
     ),
-    searchReadOdooRecords<OdooSaleOrder>(
-      session,
-      'sale.order',
-      prevSaleDomain,
-      ['id', 'amount_total', 'partner_id'],
-      { limit: 2000 },
-    ),
+    compare
+      ? searchReadOdooRecords<OdooSaleOrder>(
+          session,
+          'sale.order',
+          prevSaleDomain,
+          ['id', 'amount_total', 'partner_id'],
+          { limit: 2000 },
+        )
+      : Promise.resolve([] as OdooSaleOrder[]),
   ]);
 
   const partnerIds = [
@@ -4824,12 +4828,14 @@ export async function fetchOverviewOrders(
   userId: string,
   period: OverviewPeriod,
   type: OverviewOrderType,
+  options?: { compare?: boolean },
 ) {
   const session = getOdooSession(userId);
   if (!session) {
     throw new Error('Odoo session expired. Please log in again.');
   }
 
+  const compare = options?.compare === true;
   const window = buildPeriodWindow(period);
   const lastMonth = buildLastMonthWindow();
   const fromStr = toOdooDatetime(window.from);
@@ -4838,23 +4844,18 @@ export async function fetchOverviewOrders(
   const prevToStr = toOdooDatetime(lastMonth.to);
 
   const model = type === 'purchase' ? 'purchase.order' : 'sale.order';
-  const confirmedState =
-    type === 'purchase' ? ['purchase', 'done'] : ['sale', 'done'];
+  const currentDomain =
+    type === 'purchase'
+      ? paidPurchaseDomain(fromStr, toStr)
+      : paidSaleDomain(fromStr, toStr);
+  const prevDomain =
+    type === 'purchase'
+      ? paidPurchaseDomain(prevFromStr, prevToStr)
+      : paidSaleDomain(prevFromStr, prevToStr);
   const fields =
     type === 'purchase'
       ? PURCHASE_ORDER_LIST_FIELDS
       : ['id', 'name', 'date_order', 'partner_id', 'amount_total', 'state'];
-
-  const currentDomain: unknown[] = [
-    ['state', 'in', confirmedState],
-    ['date_order', '>=', fromStr],
-    ['date_order', '<', toStr],
-  ];
-  const prevDomain: unknown[] = [
-    ['state', 'in', confirmedState],
-    ['date_order', '>=', prevFromStr],
-    ['date_order', '<', prevToStr],
-  ];
 
   const [currentRows, prevRows] = await Promise.all([
     searchReadOdooRecords(
@@ -4864,13 +4865,15 @@ export async function fetchOverviewOrders(
       fields,
       { order: 'date_order desc, id desc', limit: 2000 },
     ),
-    searchReadOdooRecords(
-      session,
-      model,
-      prevDomain,
-      fields,
-      { order: 'amount_total desc, id desc', limit: 2000 },
-    ),
+    compare
+      ? searchReadOdooRecords(
+          session,
+          model,
+          prevDomain,
+          fields,
+          { order: 'amount_total desc, id desc', limit: 2000 },
+        )
+      : Promise.resolve([]),
   ]);
 
   const orders = (currentRows as Array<Parameters<typeof mapPeriodOrder>[0]>)
