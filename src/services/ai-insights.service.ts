@@ -1,7 +1,10 @@
 import { env } from '../config/env.js';
 import {
+  fetchOverviewDemand,
   fetchOverviewInsights,
   fetchOverviewOrders,
+  fetchOverviewRankings,
+  OverviewPeriod,
   OverviewPeriodOrder,
 } from './odoo.service.js';
 import { geminiChatJson } from './gemini.service.js';
@@ -266,6 +269,53 @@ function normalizeSuggestions(raw: unknown): AiSuggestionItem[] {
   return items;
 }
 
+const BURMESE_SYSTEM = `You are a concise business analyst for a Myanmar shop ERP.
+Write for shop owners in Myanmar. Every suggestion title and detail MUST be in Burmese (Myanmar script). Do not write English sentences.
+Keep JSON keys in English. Keep priority as high, medium, or low.
+Keep customer, vendor, area, and product names exactly as in DATA. Keep amounts as numbers with MMK.
+Return ONLY JSON with shape:
+{"suggestions":[{"title":"string","detail":"string","priority":"high|medium|low"}]}
+Give 3 to 5 actionable suggestions. No markdown.
+Use only the provided DATA.`;
+
+async function completeAiSuggestions(
+  payload: unknown,
+  focus: string,
+  slot: AiSuggestionPack['slot'],
+  options?: { persist?: boolean },
+): Promise<AiSuggestionPack> {
+  const user = `${focus}
+
+DATA:
+${JSON.stringify(payload)}`;
+
+  const content = env.geminiApiKey
+    ? await geminiChatJson({ system: BURMESE_SYSTEM, user })
+    : await groqChatJson({ system: BURMESE_SYSTEM, user });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error('AI returned invalid JSON.');
+  }
+
+  const suggestions = normalizeSuggestions(parsed);
+  if (suggestions.length === 0) {
+    throw new Error('AI returned no usable suggestions.');
+  }
+
+  const pack: AiSuggestionPack = {
+    generatedAt: new Date().toISOString(),
+    slot,
+    model: env.geminiApiKey ? env.geminiModel : env.groqModel,
+    suggestions,
+  };
+  if (options?.persist !== false) {
+    await saveSuggestionPack(pack);
+  }
+  return pack;
+}
+
 export async function generateAiSuggestions(
   userId: string,
   slot: AiSuggestionPack['slot'],
@@ -298,7 +348,7 @@ export async function generateAiSuggestions(
         'purchase orders = confirmed vendor purchases with amount_total > 0 MMK',
         'thisMonthLive = KPIs, rankings, products for the current calendar month in Yangon.',
         'thisMonthOrders = full sale/purchase order lists for the same month (may be truncated to top orders by amount).',
-        'Give practical actions for a Myanmar retail / membership shop ERP.',
+        'Write every suggestion title and detail in Burmese (Myanmar script). Keep names and MMK numbers as in the data.',
       ],
     },
     slot,
@@ -315,48 +365,149 @@ export async function generateAiSuggestions(
 
   const focus =
     slot === 'monday'
-      ? 'Focus on planning the coming week using last week and trends. Still mention this month if the numbers are striking.'
+      ? 'Focus on planning the coming week using last week and trends. Still mention this month if the numbers are striking. Write all titles and details in Burmese.'
       : slot === 'friday'
-        ? 'Focus on reviewing this week so far and what to fix before the weekend. Mention this month if relevant.'
+        ? 'Focus on reviewing this week so far and what to fix before the weekend. Mention this month if relevant. Write all titles and details in Burmese.'
         : slot === 'monthly'
-          ? 'This is a monthly review. Use thisMonthLive for KPIs and rankings, and thisMonthOrders for order-level analysis (sale vs purchase, top customers/vendors, large orders). Compare with lastMonthFromNotebook when present. Give 3–5 priorities for the rest of this month / next month.'
-          : 'Give balanced business suggestions. Use thisMonthLive and thisMonthOrders (sale + purchase orders above 0 MMK) over daily snippets.';
+          ? 'This is a monthly review. Use thisMonthLive for KPIs and rankings, and thisMonthOrders for order-level analysis (sale vs purchase, top customers/vendors, large orders). Compare with lastMonthFromNotebook when present. Give 3–5 priorities for the rest of this month / next month. Write all titles and details in Burmese.'
+          : 'Give balanced business suggestions. Use thisMonthLive and thisMonthOrders (sale + purchase orders above 0 MMK) over daily snippets. Write all titles and details in Burmese.';
 
-  const system = `You are a concise business analyst for a Myanmar shop ERP.
-Return ONLY JSON with shape:
-{"suggestions":[{"title":"string","detail":"string","priority":"high|medium|low"}]}
-Give 3 to 5 actionable suggestions. No markdown. Currency is MMK.
-Use only the provided DATA. Prefer thisMonthLive for totals/rankings and thisMonthOrders for order-level insights (sales vs purchases, concentration in top customers/vendors, unusual large orders).
-Quote real customer, vendor, area, and product names with MMK amounts when you mention them.`;
+  return completeAiSuggestions(payload, focus, slot);
+}
 
-  const user = `${focus}
+export type CompareAiTopic = 'customers' | 'areas' | 'sales' | 'demand';
 
-DATA:
-${JSON.stringify(payload)}`;
+function compactRankingRows(
+  rows: Array<{
+    name: string;
+    total: number;
+    orders: number;
+    prevTotal: number;
+    prevOrders: number;
+  }>,
+  limit = 20,
+) {
+  const current = [...rows]
+    .filter(row => row.total > 0)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, limit)
+    .map(row => ({
+      name: row.name,
+      total: row.total,
+      orders: row.orders,
+      lastMonthTotal: row.prevTotal,
+    }));
+  const lastMonth = [...rows]
+    .filter(row => row.prevTotal > 0)
+    .sort((a, b) => b.prevTotal - a.prevTotal)
+    .slice(0, limit)
+    .map(row => ({
+      name: row.name,
+      total: row.prevTotal,
+      orders: row.prevOrders,
+    }));
+  return { current, lastMonth };
+}
 
-  const content = env.geminiApiKey
-    ? await geminiChatJson({ system, user })
-    : await groqChatJson({ system, user });
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new Error('AI returned invalid JSON.');
+export async function generateCompareAiSuggestions(
+  userId: string,
+  topic: CompareAiTopic,
+  period: OverviewPeriod,
+): Promise<AiSuggestionPack> {
+  assertAiEnabled();
+  if (!env.geminiApiKey && !env.groqApiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
   }
 
-  const suggestions = normalizeSuggestions(parsed);
-  if (suggestions.length === 0) {
-    throw new Error('AI returned no usable suggestions.');
+  const notes = [
+    'Compare this period vs last calendar month in Yangon.',
+    'Only include amounts / qty above 0.',
+    'Write every suggestion title and detail in Burmese (Myanmar script). Keep names and MMK numbers as in the data.',
+  ];
+
+  if (topic === 'customers' || topic === 'areas') {
+    const rankings = await fetchOverviewRankings(userId, period, {
+      compare: true,
+    });
+    const sliced =
+      topic === 'customers'
+        ? compactRankingRows(rankings.customers)
+        : compactRankingRows(
+            rankings.areas.map(row => ({
+              name: row.name,
+              total: row.total,
+              orders: row.orders,
+              prevTotal: row.prevTotal,
+              prevOrders: row.prevOrders,
+            })),
+          );
+    const payload = {
+      business: { currency: 'MMK', timezone: 'Asia/Yangon', notes },
+      topic,
+      period,
+      range: rankings.range,
+      compareRange: rankings.compareRange,
+      thisPeriod: sliced.current,
+      lastMonth: sliced.lastMonth,
+    };
+    const focus =
+      topic === 'customers'
+        ? 'Compare most-spending customers this period vs last month. Call out who rose, who dropped, and who is too concentrated. Write all titles and details in Burmese.'
+        : 'Compare top buying areas this period vs last month. Call out areas that grew, fell, or are newly strong. Write all titles and details in Burmese.';
+    return completeAiSuggestions(payload, focus, 'manual', { persist: false });
   }
 
-  const pack: AiSuggestionPack = {
-    generatedAt: new Date().toISOString(),
-    slot,
-    model: env.geminiApiKey ? env.geminiModel : env.groqModel,
-    suggestions,
+  if (topic === 'sales') {
+    const saleOrders = await fetchOverviewOrders(userId, period, 'sale', {
+      compare: true,
+    });
+    const payload = {
+      business: { currency: 'MMK', timezone: 'Asia/Yangon', notes },
+      topic,
+      period,
+      range: saleOrders.range,
+      compareRange: saleOrders.compareRange,
+      thisPeriod: compactOrdersForAi(saleOrders.orders),
+      lastMonth: compactOrdersForAi(saleOrders.prevOrders),
+    };
+    const focus =
+      'Compare sale orders this period vs last month (amount > 0 MMK). Mention large orders, customer concentration, and whether sales rose or fell. Write all titles and details in Burmese.';
+    return completeAiSuggestions(payload, focus, 'manual', { persist: false });
+  }
+
+  const demand = await fetchOverviewDemand(userId, period, { compare: true });
+  const current = [...demand.products]
+    .filter(row => row.demandQty > 0)
+    .sort((a, b) => b.demandQty - a.demandQty)
+    .slice(0, 20)
+    .map(row => ({
+      name: row.name,
+      demandQty: row.demandQty,
+      lastMonthQty: row.prevDemandQty,
+      onHand: row.onHand,
+      revenue: row.revenue,
+    }));
+  const lastMonth = [...demand.products]
+    .filter(row => row.prevDemandQty > 0)
+    .sort((a, b) => b.prevDemandQty - a.prevDemandQty)
+    .slice(0, 20)
+    .map(row => ({
+      name: row.name,
+      demandQty: row.prevDemandQty,
+      revenue: row.prevRevenue,
+    }));
+  const payload = {
+    business: { currency: 'MMK', timezone: 'Asia/Yangon', notes },
+    topic,
+    period,
+    range: demand.range,
+    compareRange: demand.compareRange,
+    thisPeriod: current,
+    lastMonth,
   };
-  await saveSuggestionPack(pack);
-  return pack;
+  const focus =
+    'Compare highest-demand products this period vs last month. Flag products that surged, dropped, or have high demand with low on-hand stock. Write all titles and details in Burmese.';
+  return completeAiSuggestions(payload, focus, 'manual', { persist: false });
 }
 
 export async function getAiSuggestionsStatus(): Promise<{

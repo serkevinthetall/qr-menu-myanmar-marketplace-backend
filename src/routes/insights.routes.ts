@@ -3,10 +3,13 @@ import { Router } from 'express';
 import { authMiddleware } from '../middleware/auth.js';
 import {
   generateAiSuggestions,
+  generateCompareAiSuggestions,
   getAiSuggestionsStatus,
   isAiInsightsEnabled,
+  CompareAiTopic,
 } from '../services/ai-insights.service.js';
 import {
+  fetchOverviewDemand,
   fetchOverviewInsights,
   fetchOverviewOrders,
   fetchOverviewRankings,
@@ -50,6 +53,19 @@ function parseSlot(raw: unknown): 'monday' | 'friday' | 'monthly' | 'manual' {
   return 'manual';
 }
 
+function parseCompareTopic(raw: unknown): CompareAiTopic | null {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (
+    value === 'customers' ||
+    value === 'areas' ||
+    value === 'sales' ||
+    value === 'demand'
+  ) {
+    return value;
+  }
+  return null;
+}
+
 router.get('/summary', async (req: AuthRequest, res) => {
   try {
     const period = parsePeriod(req.query.period);
@@ -77,6 +93,23 @@ router.get('/orders', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load orders.';
     console.error('[insights/orders]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+/** Highest-demand products for Overview View detail. */
+router.get('/demand', async (req: AuthRequest, res) => {
+  try {
+    const period = parsePeriod(req.query.period);
+    const compare = parseCompare(req.query.compare);
+    const data = await fetchOverviewDemand(req.user!.id, period, {
+      compare,
+    });
+    return res.json({ data });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load demand.';
+    console.error('[insights/demand]', message);
     return res.status(500).json({ message });
   }
 });
@@ -127,6 +160,32 @@ router.post('/suggestions/generate', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to generate suggestions.';
     console.error('[insights/suggestions/generate]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.post('/suggestions/compare', async (req: AuthRequest, res) => {
+  if (!isAiInsightsEnabled()) {
+    return res.status(404).json({ message: 'AI insights are disabled.' });
+  }
+  try {
+    const topic = parseCompareTopic(req.body?.topic ?? req.query.topic);
+    if (!topic) {
+      return res.status(400).json({
+        message: 'topic must be customers, areas, sales, or demand.',
+      });
+    }
+    const period = parsePeriod(req.body?.period ?? req.query.period);
+    const pack = await generateCompareAiSuggestions(
+      req.user!.id,
+      topic,
+      period,
+    );
+    return res.json({ data: pack });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to generate suggestions.';
+    console.error('[insights/suggestions/compare]', message);
     return res.status(500).json({ message });
   }
 });

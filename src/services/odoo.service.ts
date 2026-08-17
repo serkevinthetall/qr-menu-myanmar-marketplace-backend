@@ -4893,3 +4893,194 @@ export async function fetchOverviewOrders(
     prevOrders,
   };
 }
+
+export type OverviewDemandProduct = {
+  id: string;
+  name: string;
+  demandQty: number;
+  prevDemandQty: number;
+  onHand: number;
+  revenue: number;
+  prevRevenue: number;
+};
+
+async function productDemandFromOrders(
+  session: { cookie: string; uid: number },
+  orderIds: number[],
+) {
+  const productTotals = new Map<
+    string,
+    { id: string; name: string; revenue: number; qty: number }
+  >();
+
+  if (orderIds.length === 0) {
+    return productTotals;
+  }
+
+  const chunkSize = 200;
+  for (let i = 0; i < orderIds.length; i += chunkSize) {
+    const chunk = orderIds.slice(i, i + chunkSize);
+    let lines: OverviewLineRow[] = [];
+    try {
+      lines = await searchReadOdooRecords<OverviewLineRow>(
+        session,
+        'sale.order.line',
+        [
+          ['order_id', 'in', chunk],
+          ['display_type', '=', false],
+        ],
+        [
+          'id',
+          'product_id',
+          'price_subtotal',
+          'product_uom_qty',
+          'display_type',
+        ],
+        { limit: 2000 },
+      );
+    } catch {
+      lines = await searchReadOdooRecords<OverviewLineRow>(
+        session,
+        'sale.order.line',
+        [['order_id', 'in', chunk]],
+        ['id', 'product_id', 'price_subtotal', 'product_uom_qty'],
+        { limit: 2000 },
+      );
+    }
+
+    for (const line of lines) {
+      if (line.display_type) {
+        continue;
+      }
+      const productId = Array.isArray(line.product_id)
+        ? String(line.product_id[0])
+        : '';
+      const productName = Array.isArray(line.product_id)
+        ? String(line.product_id[1] || '').trim()
+        : '';
+      const qty = Number(line.product_uom_qty) || 0;
+      if (!productId || !productName || qty <= 0) {
+        continue;
+      }
+      const existing = productTotals.get(productId) || {
+        id: productId,
+        name: productName,
+        revenue: 0,
+        qty: 0,
+      };
+      existing.revenue += Number(line.price_subtotal) || 0;
+      existing.qty += qty;
+      productTotals.set(productId, existing);
+    }
+  }
+
+  return productTotals;
+}
+
+/** Highest-demand products for Overview View detail. */
+export async function fetchOverviewDemand(
+  userId: string,
+  period: OverviewPeriod,
+  options?: { compare?: boolean },
+) {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const compare = options?.compare === true;
+  const window = buildPeriodWindow(period);
+  const lastMonth = buildLastMonthWindow();
+  const fromStr = toOdooDatetime(window.from);
+  const toStr = toOdooDatetime(window.to);
+  const prevFromStr = toOdooDatetime(lastMonth.from);
+  const prevToStr = toOdooDatetime(lastMonth.to);
+
+  const [saleOrders, prevSaleOrders] = await Promise.all([
+    searchReadOdooRecords<OdooSaleOrder>(
+      session,
+      'sale.order',
+      paidSaleDomain(fromStr, toStr),
+      ['id', 'amount_total'],
+      { order: 'date_order desc, id desc', limit: 2000 },
+    ),
+    compare
+      ? searchReadOdooRecords<OdooSaleOrder>(
+          session,
+          'sale.order',
+          paidSaleDomain(prevFromStr, prevToStr),
+          ['id', 'amount_total'],
+          { limit: 2000 },
+        )
+      : Promise.resolve([] as OdooSaleOrder[]),
+  ]);
+
+  const currentIds = saleOrders
+    .filter(order => (Number(order.amount_total) || 0) > 0)
+    .map(order => order.id);
+  const prevIds = prevSaleOrders
+    .filter(order => (Number(order.amount_total) || 0) > 0)
+    .map(order => order.id);
+
+  const [currentTotals, prevTotals] = await Promise.all([
+    productDemandFromOrders(session, currentIds),
+    compare
+      ? productDemandFromOrders(session, prevIds)
+      : Promise.resolve(
+          new Map<string, { id: string; name: string; revenue: number; qty: number }>(),
+        ),
+  ]);
+
+  const ids = new Set([...currentTotals.keys(), ...prevTotals.keys()]);
+  const stockIds = [...ids]
+    .map(id => Number(id))
+    .filter(id => Number.isFinite(id) && id > 0);
+  const stockByProductId = new Map<number, number>();
+
+  if (stockIds.length > 0) {
+    try {
+      type StockRow = { id: number; qty_available?: number };
+      const extra = await searchReadOdooRecords<StockRow>(
+        session,
+        'product.product',
+        [['id', 'in', stockIds]],
+        ['id', 'qty_available'],
+        { limit: stockIds.length },
+      );
+      for (const row of extra) {
+        stockByProductId.set(row.id, Number(row.qty_available) || 0);
+      }
+    } catch (error) {
+      console.warn(
+        '[insights] Demand stock lookup failed:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  const products: OverviewDemandProduct[] = [...ids]
+    .map(id => {
+      const current = currentTotals.get(id);
+      const prev = prevTotals.get(id);
+      const idNum = Number(id);
+      return {
+        id,
+        name: current?.name || prev?.name || `Product #${id}`,
+        demandQty: current?.qty ?? 0,
+        prevDemandQty: prev?.qty ?? 0,
+        onHand: stockByProductId.get(idNum) ?? 0,
+        revenue: current?.revenue ?? 0,
+        prevRevenue: prev?.revenue ?? 0,
+      };
+    })
+    .filter(row => row.demandQty > 0 || row.prevDemandQty > 0)
+    .sort((a, b) => b.demandQty - a.demandQty || b.prevDemandQty - a.prevDemandQty);
+
+  return {
+    period,
+    range: { from: fromStr, to: toStr },
+    compareRange: { from: prevFromStr, to: prevToStr },
+    compareLabel: 'Last month',
+    products,
+  };
+}
