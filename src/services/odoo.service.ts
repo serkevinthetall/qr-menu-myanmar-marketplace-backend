@@ -4503,6 +4503,7 @@ export async function fetchOverviewInsights(
   }
 
   const topSpendingCustomers = [...customerSpend.values()]
+    .filter(row => row.total > 0)
     .sort((a, b) => b.total - a.total)
     .slice(0, 5);
 
@@ -4759,9 +4760,9 @@ export async function fetchOverviewRankings(
     bumpArea(order, 'prev');
   }
 
-  const customers = [...customerSpend.values()].sort(
-    (a, b) => b.total - a.total || b.prevTotal - a.prevTotal,
-  );
+  const customers = [...customerSpend.values()]
+    .filter(row => row.total > 0)
+    .sort((a, b) => b.total - a.total || b.prevTotal - a.prevTotal);
   const areas = [...areaSpend.values()].sort(
     (a, b) => b.total - a.total || b.prevTotal - a.prevTotal,
   );
@@ -4784,5 +4785,108 @@ export async function fetchOverviewRankings(
     customers,
     areas,
     states,
+  };
+}
+
+export type OverviewOrderType = 'sale' | 'purchase';
+
+export type OverviewPeriodOrder = {
+  id: string;
+  number: string;
+  partner: string;
+  total: number;
+  orderDate: string;
+  status: string;
+};
+
+function mapPeriodOrder(order: {
+  id: number;
+  name?: string;
+  partner_id?: [number, string] | false;
+  amount_total?: number;
+  date_order?: string | false;
+  state?: string;
+}): OverviewPeriodOrder {
+  return {
+    id: String(order.id),
+    number: String(order.name || ''),
+    partner: Array.isArray(order.partner_id)
+      ? String(order.partner_id[1] || '').trim()
+      : '',
+    total: Number(order.amount_total) || 0,
+    orderDate: String(order.date_order || ''),
+    status: String(order.state || ''),
+  };
+}
+
+/** Full sale or purchase orders for Overview View detail. */
+export async function fetchOverviewOrders(
+  userId: string,
+  period: OverviewPeriod,
+  type: OverviewOrderType,
+) {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const window = buildPeriodWindow(period);
+  const lastMonth = buildLastMonthWindow();
+  const fromStr = toOdooDatetime(window.from);
+  const toStr = toOdooDatetime(window.to);
+  const prevFromStr = toOdooDatetime(lastMonth.from);
+  const prevToStr = toOdooDatetime(lastMonth.to);
+
+  const model = type === 'purchase' ? 'purchase.order' : 'sale.order';
+  const confirmedState =
+    type === 'purchase' ? ['purchase', 'done'] : ['sale', 'done'];
+  const fields =
+    type === 'purchase'
+      ? PURCHASE_ORDER_LIST_FIELDS
+      : ['id', 'name', 'date_order', 'partner_id', 'amount_total', 'state'];
+
+  const currentDomain: unknown[] = [
+    ['state', 'in', confirmedState],
+    ['date_order', '>=', fromStr],
+    ['date_order', '<', toStr],
+  ];
+  const prevDomain: unknown[] = [
+    ['state', 'in', confirmedState],
+    ['date_order', '>=', prevFromStr],
+    ['date_order', '<', prevToStr],
+  ];
+
+  const [currentRows, prevRows] = await Promise.all([
+    searchReadOdooRecords(
+      session,
+      model,
+      currentDomain,
+      fields,
+      { order: 'date_order desc, id desc', limit: 2000 },
+    ),
+    searchReadOdooRecords(
+      session,
+      model,
+      prevDomain,
+      fields,
+      { order: 'amount_total desc, id desc', limit: 2000 },
+    ),
+  ]);
+
+  const orders = (currentRows as Array<Parameters<typeof mapPeriodOrder>[0]>)
+    .map(mapPeriodOrder)
+    .filter(row => row.total > 0);
+  const prevOrders = (prevRows as Array<Parameters<typeof mapPeriodOrder>[0]>)
+    .map(mapPeriodOrder)
+    .filter(row => row.total > 0);
+
+  return {
+    period,
+    type,
+    range: { from: fromStr, to: toStr },
+    compareRange: { from: prevFromStr, to: prevToStr },
+    compareLabel: 'Last month',
+    orders,
+    prevOrders,
   };
 }

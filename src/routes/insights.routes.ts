@@ -9,7 +9,9 @@ import {
 } from '../services/ai-insights.service.js';
 import {
   fetchOverviewInsights,
+  fetchOverviewOrders,
   fetchOverviewRankings,
+  OverviewOrderType,
   OverviewPeriod,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
@@ -24,6 +26,11 @@ function parsePeriod(raw: unknown): OverviewPeriod {
     return value;
   }
   return 'month';
+}
+
+function parseOrderType(raw: unknown): OverviewOrderType {
+  const value = String(raw ?? 'sale').trim().toLowerCase();
+  return value === 'purchase' ? 'purchase' : 'sale';
 }
 
 function parseSlot(raw: unknown): 'monday' | 'friday' | 'monthly' | 'manual' {
@@ -48,6 +55,21 @@ router.get('/summary', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load overview.';
     console.error('[insights]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+/** Full sale / purchase order lists for Overview View detail. */
+router.get('/orders', async (req: AuthRequest, res) => {
+  try {
+    const period = parsePeriod(req.query.period);
+    const type = parseOrderType(req.query.type);
+    const data = await fetchOverviewOrders(req.user!.id, period, type);
+    return res.json({ data });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load orders.';
+    console.error('[insights/orders]', message);
     return res.status(500).json({ message });
   }
 });
