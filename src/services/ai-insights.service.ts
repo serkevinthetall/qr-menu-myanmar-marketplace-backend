@@ -1,5 +1,9 @@
 import { env } from '../config/env.js';
-import { fetchOverviewInsights } from './odoo.service.js';
+import {
+  fetchOverviewInsights,
+  fetchOverviewOrders,
+  OverviewPeriodOrder,
+} from './odoo.service.js';
 import { geminiChatJson } from './gemini.service.js';
 import { groqChatJson } from './groq.service.js';
 import {
@@ -12,6 +16,9 @@ import {
   saveDailyRollup,
   saveSuggestionPack,
 } from './ai-insights-store.js';
+
+/** Max individual orders sent to Gemini per type (avoids token overflow). */
+const AI_ORDER_LIST_LIMIT = 120;
 
 function yangonDateString(date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -190,22 +197,46 @@ function compactMonthLive(
       demandQty: row.demandQty,
       onHand: row.onHand,
     })),
-    recentSaleOrders: (monthLive.recentOrders ?? [])
-      .filter(row => row.total > 0)
-      .slice(0, 8)
-      .map(row => ({
-        number: row.number,
-        customer: row.customer,
-        total: row.total,
-      })),
-    recentPurchaseOrders: (monthLive.recentPurchaseOrders ?? [])
-      .filter(row => row.total > 0)
-      .slice(0, 8)
-      .map(row => ({
-        number: row.number,
-        vendor: row.vendor,
-        total: row.total,
-      })),
+  };
+}
+
+function compactOrdersForAi(orders: OverviewPeriodOrder[]) {
+  const rows = orders.filter(row => row.total > 0);
+  const totalAmount = rows.reduce((sum, row) => sum + row.total, 0);
+  const sorted = [...rows].sort((a, b) => b.total - a.total);
+
+  const byPartner = new Map<
+    string,
+    { name: string; total: number; orders: number }
+  >();
+  for (const row of sorted) {
+    const name = row.partner.trim() || 'Unknown';
+    const existing = byPartner.get(name) || { name, total: 0, orders: 0 };
+    existing.total += row.total;
+    existing.orders += 1;
+    byPartner.set(name, existing);
+  }
+
+  const topPartners = [...byPartner.values()]
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 15)
+    .map(row => ({
+      name: row.name,
+      total: row.total,
+      orders: row.orders,
+    }));
+
+  return {
+    count: rows.length,
+    totalAmount,
+    topPartners,
+    orders: sorted.slice(0, AI_ORDER_LIST_LIMIT).map(row => ({
+      number: row.number,
+      partner: row.partner,
+      date: row.orderDate.slice(0, 10),
+      total: row.total,
+    })),
+    truncated: rows.length > AI_ORDER_LIST_LIMIT,
   };
 }
 
@@ -244,24 +275,29 @@ export async function generateAiSuggestions(
     throw new Error('GEMINI_API_KEY is not configured.');
   }
 
-  // Only fetch live monthly Overview when the user clicks Process.
-  const [history, monthLive] = await Promise.all([
+  // Only fetch live monthly Overview + order lists when the user clicks Process.
+  const [history, monthLive, saleOrders, purchaseOrders] = await Promise.all([
     listDailyRollups(90),
     fetchOverviewInsights(userId, 'month'),
+    fetchOverviewOrders(userId, 'month', 'sale', { compare: false }),
+    fetchOverviewOrders(userId, 'month', 'purchase', { compare: false }),
   ]);
 
   const thisMonthKey = yangonMonthKey();
   const lastMonthKey = previousMonthKey(thisMonthKey);
   const monthSnapshot = compactMonthLive(monthLive);
+  const saleOrdersSnapshot = compactOrdersForAi(saleOrders.orders);
+  const purchaseOrdersSnapshot = compactOrdersForAi(purchaseOrders.orders);
 
   const payload = {
     business: {
       currency: 'MMK',
       timezone: 'Asia/Yangon',
       notes: [
-        'sale orders = confirmed customer sales with amount_total > 0',
-        'purchase orders = confirmed vendor purchases with amount_total > 0',
-        'thisMonthLive is the current calendar month in Yangon — use it as the main source.',
+        'sale orders = confirmed customer sales with amount_total > 0 MMK',
+        'purchase orders = confirmed vendor purchases with amount_total > 0 MMK',
+        'thisMonthLive = KPIs, rankings, products for the current calendar month in Yangon.',
+        'thisMonthOrders = full sale/purchase order lists for the same month (may be truncated to top orders by amount).',
         'Give practical actions for a Myanmar retail / membership shop ERP.',
       ],
     },
@@ -269,6 +305,11 @@ export async function generateAiSuggestions(
     weeklyTrend: buildWeeklyTotals(history),
     last14Daily: history.slice(-14),
     thisMonthLive: monthSnapshot,
+    thisMonthOrders: {
+      range: saleOrders.range,
+      sale: saleOrdersSnapshot,
+      purchase: purchaseOrdersSnapshot,
+    },
     lastMonthFromNotebook: sumRollupsForMonth(history, lastMonthKey),
   };
 
@@ -278,14 +319,15 @@ export async function generateAiSuggestions(
       : slot === 'friday'
         ? 'Focus on reviewing this week so far and what to fix before the weekend. Mention this month if relevant.'
         : slot === 'monthly'
-          ? 'This is a monthly review. Use thisMonthLive as the primary data: sales, purchases, top spenders, top buying areas, products, and stock. Compare with lastMonthFromNotebook when present. Give 3–5 priorities for the rest of this month / next month.'
-          : 'Give balanced business suggestions. Prefer thisMonthLive (monthly Overview) over daily snippets.';
+          ? 'This is a monthly review. Use thisMonthLive for KPIs and rankings, and thisMonthOrders for order-level analysis (sale vs purchase, top customers/vendors, large orders). Compare with lastMonthFromNotebook when present. Give 3–5 priorities for the rest of this month / next month.'
+          : 'Give balanced business suggestions. Use thisMonthLive and thisMonthOrders (sale + purchase orders above 0 MMK) over daily snippets.';
 
   const system = `You are a concise business analyst for a Myanmar shop ERP.
 Return ONLY JSON with shape:
 {"suggestions":[{"title":"string","detail":"string","priority":"high|medium|low"}]}
 Give 3 to 5 actionable suggestions. No markdown. Currency is MMK.
-Use only the provided DATA. Prefer thisMonthLive. Quote real customer, area, and product names with MMK amounts when you mention them.`;
+Use only the provided DATA. Prefer thisMonthLive for totals/rankings and thisMonthOrders for order-level insights (sales vs purchases, concentration in top customers/vendors, unusual large orders).
+Quote real customer, vendor, area, and product names with MMK amounts when you mention them.`;
 
   const user = `${focus}
 
