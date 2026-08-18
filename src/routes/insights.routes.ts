@@ -2,11 +2,13 @@ import { Router } from 'express';
 
 import { authMiddleware } from '../middleware/auth.js';
 import {
+  answerOverviewChat,
   generateAiSuggestions,
   generateCompareAiSuggestions,
   getAiSuggestionsStatus,
   isAiInsightsEnabled,
   CompareAiTopic,
+  OverviewChatTurn,
 } from '../services/ai-insights.service.js';
 import {
   fetchOverviewDemand,
@@ -160,6 +162,51 @@ router.post('/suggestions/generate', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to generate suggestions.';
     console.error('[insights/suggestions/generate]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+function parseChatHistory(raw: unknown): OverviewChatTurn[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const turns: OverviewChatTurn[] = [];
+  for (const item of raw.slice(-12)) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const row = item as Record<string, unknown>;
+    const role = String(row.role ?? '').trim();
+    const content = String(row.content ?? '').trim().slice(0, 2000);
+    if ((role === 'user' || role === 'assistant') && content) {
+      turns.push({ role, content });
+    }
+  }
+  return turns;
+}
+
+router.post('/chat', async (req: AuthRequest, res) => {
+  if (!isAiInsightsEnabled()) {
+    return res.status(404).json({ message: 'AI insights are disabled.' });
+  }
+  try {
+    const message = String(req.body?.message ?? '').trim();
+    if (!message) {
+      return res.status(400).json({ message: 'message is required.' });
+    }
+    const period = parsePeriod(req.body?.period ?? req.query.period);
+    const history = parseChatHistory(req.body?.history);
+    const data = await answerOverviewChat(
+      req.user!.id,
+      period,
+      message,
+      history,
+    );
+    return res.json({ data });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to send chat.';
+    console.error('[insights/chat]', message);
     return res.status(500).json({ message });
   }
 });

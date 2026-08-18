@@ -7,10 +7,16 @@ type GeminiGenerateResponse = {
   error?: { message?: string; status?: string };
 };
 
-export async function geminiChatJson(params: {
+export type GeminiChatTurn = {
+  role: 'user' | 'model';
+  text: string;
+};
+
+async function geminiGenerate(params: {
   system: string;
-  user: string;
+  contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
   temperature?: number;
+  responseMimeType?: 'application/json' | 'text/plain';
 }): Promise<string> {
   if (!env.geminiApiKey) {
     throw new Error('GEMINI_API_KEY is not configured.');
@@ -29,15 +35,12 @@ export async function geminiChatJson(params: {
       systemInstruction: {
         parts: [{ text: params.system }],
       },
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: params.user }],
-        },
-      ],
+      contents: params.contents,
       generationConfig: {
         temperature: params.temperature ?? 0.3,
-        responseMimeType: 'application/json',
+        ...(params.responseMimeType
+          ? { responseMimeType: params.responseMimeType }
+          : {}),
       },
     }),
   });
@@ -57,4 +60,59 @@ export async function geminiChatJson(params: {
     throw new Error('Gemini returned an empty response.');
   }
   return content;
+}
+
+export async function geminiChatText(params: {
+  system: string;
+  history?: GeminiChatTurn[];
+  user: string;
+  temperature?: number;
+}): Promise<string> {
+  const contents: Array<{
+    role: 'user' | 'model';
+    parts: Array<{ text: string }>;
+  }> = [];
+
+  for (const turn of params.history ?? []) {
+    const text = turn.text.trim();
+    if (!text) {
+      continue;
+    }
+    contents.push({
+      role: turn.role,
+      parts: [{ text }],
+    });
+  }
+  contents.push({
+    role: 'user',
+    parts: [{ text: params.user }],
+  });
+
+  return geminiGenerate({
+    system: params.system,
+    contents,
+    temperature: params.temperature ?? 0.4,
+  });
+}
+
+export async function geminiChatJson(params: {
+  system: string;
+  user: string;
+  temperature?: number;
+}): Promise<string> {
+  if (!env.geminiApiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
+  }
+
+  return geminiGenerate({
+    system: params.system,
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: params.user }],
+      },
+    ],
+    temperature: params.temperature ?? 0.3,
+    responseMimeType: 'application/json',
+  });
 }

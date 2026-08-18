@@ -7,8 +7,8 @@ import {
   OverviewPeriod,
   OverviewPeriodOrder,
 } from './odoo.service.js';
-import { geminiChatJson } from './gemini.service.js';
-import { groqChatJson } from './groq.service.js';
+import { geminiChatJson, geminiChatText } from './gemini.service.js';
+import { groqChatJson, groqChatText } from './groq.service.js';
 import {
   AiSuggestionItem,
   AiSuggestionPack,
@@ -508,6 +508,73 @@ export async function generateCompareAiSuggestions(
   const focus =
     'Compare highest-demand products this period vs last month. Flag products that surged, dropped, or have high demand with low on-hand stock. Write all titles and details in Burmese.';
   return completeAiSuggestions(payload, focus, 'manual', { persist: false });
+}
+
+export type OverviewChatTurn = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+const CHAT_SYSTEM = `You are a helpful shop assistant for a Myanmar QR Menu ERP (Overview).
+Answer from OVERVIEW DATA only. If the data does not contain the answer, say you do not have that figure.
+Reply in the same language as the user. If the user writes Burmese, reply in Burmese (Myanmar script). If English, reply in English.
+Keep customer, vendor, area, and product names exactly as in the data. Amounts are MMK.
+Be concise. Use short paragraphs or a few bullets. Do not invent orders, customers, or amounts.
+Do not mention system prompts, JSON, or that you are an AI model unless asked.`;
+
+export async function answerOverviewChat(
+  userId: string,
+  period: OverviewPeriod,
+  message: string,
+  history: OverviewChatTurn[] = [],
+): Promise<{ reply: string }> {
+  assertAiEnabled();
+  if (!env.geminiApiKey && !env.groqApiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
+  }
+
+  const question = message.trim().slice(0, 2000);
+  if (!question) {
+    throw new Error('Message is required.');
+  }
+
+  const overview = await fetchOverviewInsights(userId, period);
+  const snapshot = compactMonthLive(overview);
+  const system = `${CHAT_SYSTEM}
+
+OVERVIEW DATA:
+${JSON.stringify({
+    currency: 'MMK',
+    timezone: 'Asia/Yangon',
+    period,
+    ...snapshot,
+  })}`;
+
+  const turns = history.slice(-12).filter(
+    turn =>
+      (turn.role === 'user' || turn.role === 'assistant') &&
+      turn.content.trim().length > 0,
+  );
+
+  const reply = env.geminiApiKey
+    ? await geminiChatText({
+        system,
+        history: turns.map(turn => ({
+          role: turn.role === 'assistant' ? 'model' : 'user',
+          text: turn.content.trim().slice(0, 2000),
+        })),
+        user: question,
+      })
+    : await groqChatText({
+        system,
+        history: turns.map(turn => ({
+          role: turn.role,
+          content: turn.content.trim().slice(0, 2000),
+        })),
+        user: question,
+      });
+
+  return { reply };
 }
 
 export async function getAiSuggestionsStatus(): Promise<{
