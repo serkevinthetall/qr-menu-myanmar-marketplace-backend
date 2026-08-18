@@ -119,6 +119,197 @@ router.get('/badge', async (_req: AuthRequest, res) => {
   }
 });
 
+type AppUserListRange = 'today' | 'yesterday' | 'week' | 'month';
+
+const YANGON_OFFSET_MS = 6.5 * 60 * 60 * 1000;
+
+function toYangonLocal(date: Date): Date {
+  return new Date(date.getTime() + YANGON_OFFSET_MS);
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+function formatYangonYMD(dateUtc: Date): string {
+  const d = toYangonLocal(dateUtc);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(
+    d.getUTCDate(),
+  )}`;
+}
+
+function formatYangonHourBucket(dateUtc: Date): string {
+  const d = toYangonLocal(dateUtc);
+  return `${formatYangonYMD(dateUtc)}T${pad2(d.getUTCHours())}`;
+}
+
+function yangonStartOfDayUtc(dateUtc: Date): Date {
+  const d = toYangonLocal(dateUtc);
+  const startLocalMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0);
+  return new Date(startLocalMs - YANGON_OFFSET_MS);
+}
+
+function yangonStartOfWeekUtc(nowUtc: Date): Date {
+  // Monday as week start.
+  const d = toYangonLocal(nowUtc);
+  const day = d.getUTCDay(); // 0=Sun..6=Sat
+  const diff = day === 0 ? -6 : 1 - day;
+  const startLocalMs =
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0) +
+    diff * 86400000;
+  return new Date(startLocalMs - YANGON_OFFSET_MS);
+}
+
+function yangonStartOfMonthUtc(nowUtc: Date): Date {
+  const d = toYangonLocal(nowUtc);
+  const startLocalMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0);
+  return new Date(startLocalMs - YANGON_OFFSET_MS);
+}
+
+function addDaysUtc(dateUtc: Date, days: number): Date {
+  return new Date(dateUtc.getTime() + days * 86400000);
+}
+
+function parseAppUserListRange(raw: unknown): AppUserListRange {
+  const value = String(raw ?? 'month').trim().toLowerCase();
+  if (value === 'today') return 'today';
+  if (value === 'yesterday') return 'yesterday';
+  if (value === 'week') return 'week';
+  return 'month';
+}
+
+function buildBucketsAndWindow(range: AppUserListRange, now = new Date()): {
+  start: Date;
+  end: Date;
+  buckets: string[];
+  bucketMode: 'day' | 'hour';
+} {
+  if (range === 'today') {
+    const start = yangonStartOfDayUtc(now);
+    const end = addDaysUtc(start, 1);
+    const buckets: string[] = [];
+    for (let h = 0; h < 24; h += 1) {
+      const d = addDaysUtc(start, 0); // clone
+      const bucketUtc = new Date(d.getTime() + h * 3600000);
+      buckets.push(formatYangonHourBucket(bucketUtc));
+    }
+    return { start, end, buckets, bucketMode: 'hour' };
+  }
+
+  if (range === 'yesterday') {
+    const start = addDaysUtc(yangonStartOfDayUtc(now), -1);
+    const end = yangonStartOfDayUtc(now);
+    const buckets: string[] = [];
+    for (let h = 0; h < 24; h += 1) {
+      const bucketUtc = new Date(start.getTime() + h * 3600000);
+      buckets.push(formatYangonHourBucket(bucketUtc));
+    }
+    return { start, end, buckets, bucketMode: 'hour' };
+  }
+
+  if (range === 'week') {
+    const start = yangonStartOfWeekUtc(now);
+    const end = addDaysUtc(start, 7);
+    const buckets: string[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const dayUtc = addDaysUtc(start, i);
+      buckets.push(formatYangonYMD(dayUtc));
+    }
+    return { start, end, buckets, bucketMode: 'day' };
+  }
+
+  // month
+  const start = yangonStartOfMonthUtc(now);
+  const end = (() => {
+    const d = toYangonLocal(now);
+    const nextMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0) - YANGON_OFFSET_MS);
+    return nextMonth;
+  })();
+  const buckets: string[] = [];
+  for (let cursor = new Date(start); cursor < end; cursor = addDaysUtc(cursor, 1)) {
+    buckets.push(formatYangonYMD(cursor));
+  }
+  return { start, end, buckets, bucketMode: 'day' };
+}
+
+router.get('/analytics/summary', async (req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  try {
+    await connectMongo();
+    const range = parseAppUserListRange(req.query.range);
+    const { start, end } = buildBucketsAndWindow(range);
+    const count = await AppInstallModel.countDocuments({
+      requestedAt: { $gte: start, $lt: end },
+    });
+    return res.json({ data: { range, count } });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load App User List summary.';
+    console.error('[app-installs] analytics summary', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.get('/analytics/timeline', async (req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  try {
+    await connectMongo();
+    const range = parseAppUserListRange(req.query.range);
+    const { start, end, buckets, bucketMode } = buildBucketsAndWindow(range);
+
+    const keyFormat = bucketMode === 'hour' ? '%Y-%m-%dT%H' : '%Y-%m-%d';
+
+    const rows = await AppInstallModel.aggregate<{
+      _id: string;
+      count: number;
+    }>([
+      { $match: { requestedAt: { $gte: start, $lt: end } } },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: keyFormat,
+              date: '$requestedAt',
+              timezone: 'Asia/Yangon',
+            },
+          },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const byBucket = new Map<string, number>();
+    for (const row of rows) {
+      byBucket.set(row._id, row.count);
+    }
+
+    const total = buckets.reduce((sum, b) => sum + (byBucket.get(b) || 0), 0);
+
+    return res.json({
+      data: {
+        range,
+        count: total,
+        buckets,
+        series: [
+          {
+            name: 'App User List',
+            total,
+            points: buckets.map(bucket => ({
+              bucket,
+              value: byBucket.get(bucket) || 0,
+            })),
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load App User List timeline.';
+    console.error('[app-installs] analytics timeline', message);
+    return res.status(500).json({ message });
+  }
+});
+
 /** Map of odooPartnerId -> install record (for Contact list badges). */
 router.get('/map', async (req: AuthRequest, res) => {
   if (!requireMongo(res)) return;
