@@ -12,6 +12,7 @@ import {
   AppInstallModel,
   appInstallReasonLabel,
   appInstallStatusLabel,
+  type AppInstallStatus,
   isAppInstallReason,
   isAppInstallStatus,
   normalizeAppInstallStatus,
