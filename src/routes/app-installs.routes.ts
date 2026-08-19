@@ -19,8 +19,6 @@ import {
 } from '../models/app-install.model.js';
 import {
   fetchOdooContactById,
-  fetchOdooContactsByIds,
-  fetchAppOrderStatsByPartnerIds,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 
@@ -336,7 +334,7 @@ router.get('/map', async (req: AuthRequest, res) => {
   }
 });
 
-/** Call list: install records joined with live Odoo contact names/phones. */
+/** Call list: Mongo install records only (name/phone saved at Request time). */
 router.get('/', async (req: AuthRequest, res) => {
   if (!requireMongo(res)) return;
   try {
@@ -359,36 +357,7 @@ router.get('/', async (req: AuthRequest, res) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    const partnerIds = rows.map(row => row.odooPartnerId);
-    const [contacts, appOrderStats] = await Promise.all([
-      fetchOdooContactsByIds(req.user!.id, partnerIds),
-      fetchAppOrderStatsByPartnerIds(req.user!.id, partnerIds),
-    ]);
-    const contactById = new Map(contacts.map(c => [c.id, c]));
-
-    let data = rows.map(row => {
-      const contact = contactById.get(row.odooPartnerId);
-      const name =
-        (contact ? toStringValue(contact.name) : '') || row.partnerName || '';
-      const phone =
-        (contact ? toStringValue(contact.phone) : '') || row.partnerPhone || '';
-      const orderStat = appOrderStats.get(row.odooPartnerId);
-      return {
-        ...mapDoc(row as never),
-        name,
-        phone,
-        township: contact
-          ? toStringValue(
-              Array.isArray(contact.x_studio_many2one_field_8u9_1jp4l7r0g)
-                ? contact.x_studio_many2one_field_8u9_1jp4l7r0g[1]
-                : '',
-            )
-          : '',
-        appOrderCount: orderStat?.count ?? 0,
-        lastAppOrderNumber: orderStat?.lastOrderNumber ?? '',
-        lastAppOrderDate: orderStat?.lastOrderDate ?? '',
-      };
-    });
+    let data = rows.map(row => mapDoc(row as never));
 
     if (q) {
       data = data.filter(
@@ -424,11 +393,6 @@ router.post('/:partnerId/request', async (req: AuthRequest, res) => {
 
   try {
     await connectMongo();
-    const contact = await fetchOdooContactById(req.user!.id, partnerId);
-    if (!contact) {
-      return res.status(404).json({ message: 'Contact not found in Odoo.' });
-    }
-
     const existing = await AppInstallModel.findOne({ odooPartnerId: partnerId });
     if (existing) {
       return res.json({
@@ -437,10 +401,26 @@ router.post('/:partnerId/request', async (req: AuthRequest, res) => {
       });
     }
 
+    const nameFromBody = toStringValue(req.body?.name).trim();
+    const phoneFromBody = toStringValue(req.body?.phone).trim();
+    let partnerName = nameFromBody;
+    let partnerPhone = phoneFromBody;
+
+    if (!partnerName) {
+      const contact = await fetchOdooContactById(req.user!.id, partnerId);
+      if (!contact) {
+        return res.status(404).json({ message: 'Contact not found in Odoo.' });
+      }
+      partnerName = toStringValue(contact.name);
+      if (!partnerPhone) {
+        partnerPhone = toStringValue(contact.phone);
+      }
+    }
+
     const created = await AppInstallModel.create({
       odooPartnerId: partnerId,
-      partnerName: toStringValue(contact.name),
-      partnerPhone: toStringValue(contact.phone),
+      partnerName,
+      partnerPhone,
       status: 'new',
       reason: null,
       requestedAt: new Date(),

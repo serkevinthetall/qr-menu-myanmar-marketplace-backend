@@ -2568,7 +2568,7 @@ export async function fetchOdooContactsByIds(
 ): Promise<OdooContact[]> {
   const session = getOdooSession(userId);
   if (!session) {
-    throw new Error('Odoo session expired. Please log in again.');
+    return [];
   }
 
   const ids = [...new Set(contactIds)].filter(
@@ -2583,14 +2583,22 @@ export async function fetchOdooContactsByIds(
     ...Object.keys(CONTACT_CUSTOM_FIELDS),
     ...CONTACT_EXTRA_FIELDS,
   ];
+  const chunkSize = 80;
+  const contacts: OdooContact[] = [];
 
-  return searchReadOdooRecords<OdooContact>(
-    session,
-    'res.partner',
-    [['id', 'in', ids]],
-    fields,
-    { limit: ids.length, order: 'name asc' },
-  );
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const rows = await searchReadOdooRecords<OdooContact>(
+      session,
+      'res.partner',
+      [['id', 'in', chunk]],
+      fields,
+      { limit: chunk.length, order: 'name asc' },
+    );
+    contacts.push(...rows);
+  }
+
+  return contacts;
 }
 
 export async function fetchOdooPartnerCategoryNames(
@@ -3702,7 +3710,7 @@ export async function fetchAppOrderStatsByPartnerIds(
 
   const session = getOdooSession(userId);
   if (!session) {
-    throw new Error('Odoo session expired. Please log in again.');
+    return stats;
   }
 
   const administratorUserId = await resolveAdministratorUserId(session);
