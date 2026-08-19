@@ -176,6 +176,14 @@ function parseAppUserListRange(raw: unknown): AppUserListRange {
   return 'month';
 }
 
+function parseAppUserListAnalyticsStatus(raw: unknown): AppInstallStatus | 'all' {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (!value || value === 'all') return 'all';
+  if (isAppInstallStatus(value)) return value;
+  // Unknown status -> treat as installed to keep the UI useful.
+  return 'installed';
+}
+
 function buildBucketsAndWindow(range: AppUserListRange, now = new Date()): {
   start: Date;
   end: Date;
@@ -235,10 +243,16 @@ router.get('/analytics/summary', async (req: AuthRequest, res) => {
   try {
     await connectMongo();
     const range = parseAppUserListRange(req.query.range);
+    const status = parseAppUserListAnalyticsStatus(req.query.status);
     const { start, end } = buildBucketsAndWindow(range);
-    const count = await AppInstallModel.countDocuments({
+    const match: Record<string, unknown> = {
       requestedAt: { $gte: start, $lt: end },
-    });
+    };
+    if (status !== 'all') {
+      match.status = status;
+    }
+
+    const count = await AppInstallModel.countDocuments(match);
     return res.json({ data: { range, count } });
   } catch (error) {
     const message =
@@ -253,15 +267,23 @@ router.get('/analytics/timeline', async (req: AuthRequest, res) => {
   try {
     await connectMongo();
     const range = parseAppUserListRange(req.query.range);
+    const status = parseAppUserListAnalyticsStatus(req.query.status);
     const { start, end, buckets, bucketMode } = buildBucketsAndWindow(range);
 
     const keyFormat = bucketMode === 'hour' ? '%Y-%m-%dT%H' : '%Y-%m-%d';
+
+    const match: Record<string, unknown> = {
+      requestedAt: { $gte: start, $lt: end },
+    };
+    if (status !== 'all') {
+      match.status = status;
+    }
 
     const rows = await AppInstallModel.aggregate<{
       _id: string;
       count: number;
     }>([
-      { $match: { requestedAt: { $gte: start, $lt: end } } },
+      { $match: match },
       {
         $group: {
           _id: {
@@ -290,7 +312,7 @@ router.get('/analytics/timeline', async (req: AuthRequest, res) => {
         buckets,
         series: [
           {
-            name: 'App User List',
+            name: status === 'all' ? 'App User List' : 'Installed users',
             total,
             points: buckets.map(bucket => ({
               bucket,
