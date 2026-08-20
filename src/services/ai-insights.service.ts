@@ -145,6 +145,113 @@ function sumRollupsForMonth(days: DailyInsightRollup[], monthKey: string) {
   };
 }
 
+function compactMonthFromDailyRollups(
+  days: DailyInsightRollup[],
+  monthKey: string,
+) {
+  const rows = days.filter(day => day.date.startsWith(monthKey));
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const saleAmount = rows.reduce((sum, row) => sum + row.saleAmount, 0);
+  const saleOrders = rows.reduce((sum, row) => sum + row.saleOrders, 0);
+  const purchaseAmount = rows.reduce(
+    (sum, row) => sum + row.purchaseAmount,
+    0,
+  );
+  const purchaseOrders = rows.reduce(
+    (sum, row) => sum + row.purchaseOrders,
+    0,
+  );
+  const buyingCustomers = rows.reduce(
+    (sum, row) => sum + row.buyingCustomers,
+    0,
+  );
+  const quotations = rows.reduce((sum, row) => sum + row.quotations, 0);
+  const itemsSold = rows.reduce((sum, row) => sum + row.itemsSold, 0);
+  const avgOrderValue =
+    saleOrders > 0 ? saleAmount / saleOrders : rows[rows.length - 1]?.avgOrderValue ?? 0;
+
+  const sumAreas = new Map<string, number>();
+  const sumProducts = new Map<string, number>();
+  const sumBottomProducts = new Map<string, number>();
+  const sumSpenders = new Map<string, { total: number; orders: number }>();
+
+  for (const day of rows) {
+    for (const row of day.topAreas) {
+      if (!row?.name || row.total <= 0) continue;
+      sumAreas.set(row.name, (sumAreas.get(row.name) ?? 0) + row.total);
+    }
+    for (const row of day.topProducts) {
+      if (!row?.name || row.revenue <= 0) continue;
+      sumProducts.set(row.name, (sumProducts.get(row.name) ?? 0) + row.revenue);
+    }
+    for (const row of day.bottomProducts) {
+      if (!row?.name || row.revenue <= 0) continue;
+      sumBottomProducts.set(
+        row.name,
+        (sumBottomProducts.get(row.name) ?? 0) + row.revenue,
+      );
+    }
+    for (const row of day.topSpenders) {
+      if (!row?.name || row.total <= 0) continue;
+      const existing = sumSpenders.get(row.name) ?? { total: 0, orders: 0 };
+      existing.total += row.total;
+      existing.orders += row.orders;
+      sumSpenders.set(row.name, existing);
+    }
+  }
+
+  const topAreas = [...sumAreas.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([name, total]) => ({ name, total }));
+
+  const topProducts = [...sumProducts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([name, revenue]) => ({ name, revenue }));
+
+  const bottomProducts = [...sumBottomProducts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([name, revenue]) => ({ name, revenue }));
+
+  const topSpenders = [...sumSpenders.entries()]
+    .sort((a, b) => b[1].total - a[1].total)
+    .slice(0, 6)
+    .map(([name, row]) => ({
+      name,
+      total: row.total,
+      orders: row.orders,
+    }));
+
+  return {
+    month: monthKey,
+    daysRecorded: rows.length,
+    saleAmount,
+    saleOrders,
+    purchaseAmount,
+    purchaseOrders,
+    buyingCustomers,
+    quotations,
+    itemsSold,
+    avgOrderValue,
+    topAreas,
+    topProducts,
+    bottomProducts,
+    topSpenders,
+  };
+}
+
+function compactAiSuggestionsForStage2(suggestions: AiSuggestionItem[]) {
+  return suggestions.slice(0, 3).map(s => ({
+    title: s.title,
+    priority: s.priority,
+  }));
+}
+
 function compactMonthLive(
   monthLive: Awaited<ReturnType<typeof fetchOverviewInsights>>,
 ) {
@@ -373,6 +480,98 @@ export async function generateAiSuggestions(
           : 'Give balanced business suggestions. Use thisMonthLive and thisMonthOrders (sale + purchase orders above 0 MMK) over daily snippets. Write all titles and details in Burmese.';
 
   return completeAiSuggestions(payload, focus, slot);
+}
+
+/**
+ * Hybrid 6-month flow:
+ * 1) Build compact monthly snapshots from daily rollups.
+ * 2) Ask Gemini/Groq per month for suggestions (no persistence).
+ * 3) Ask Gemini/Groq once more for final 3–5 priorities (no persistence).
+ */
+export async function generateSixMonthAiSuggestions(
+  userId: string,
+): Promise<AiSuggestionPack> {
+  assertAiEnabled();
+  if (!env.geminiApiKey && !env.groqApiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
+  }
+
+  // Daily rollups are already timezone-normalized (Asia/Yangon) when stored.
+  const history = await listDailyRollups(200);
+  if (history.length === 0) {
+    throw new Error('No AI rollups available yet. Run the normal Overview rollup first.');
+  }
+
+  const monthKeys = [...new Set(history.map(r => r.date.slice(0, 7)))].sort();
+  const selectedMonthKeys = monthKeys.slice(-6);
+
+  const monthAnalyses: Array<{
+    month: string;
+    snapshot: NonNullable<ReturnType<typeof compactMonthFromDailyRollups>>;
+    monthlySuggestions: AiSuggestionItem[];
+  }> = [];
+
+  for (const monthKey of selectedMonthKeys) {
+    const snapshot = compactMonthFromDailyRollups(history, monthKey);
+    if (!snapshot) continue;
+
+    const payload = {
+      business: { currency: 'MMK', timezone: 'Asia/Yangon' },
+      month: snapshot,
+    };
+
+    const focus =
+      'This is a monthly review for thisMonth only. Use DATA.month (KPIs + top areas/products/spenders) to give 3–5 actionable Burmese suggestions. Return JSON suggestions only.';
+
+    const pack = await completeAiSuggestions(payload, focus, 'manual', {
+      persist: false,
+    });
+
+    monthAnalyses.push({
+      month: monthKey,
+      snapshot,
+      monthlySuggestions: pack.suggestions,
+    });
+  }
+
+  if (monthAnalyses.length === 0) {
+    throw new Error('Failed to build any monthly snapshots for the last 6 months.');
+  }
+
+  const finalPayload = {
+    business: {
+      currency: 'MMK',
+      timezone: 'Asia/Yangon',
+      notes: [
+        'Use the provided monthly snapshots and the month-level suggestions.',
+        'Write every suggestion title and detail in Burmese.',
+        'Keep amounts as numbers with MMK in DATA.',
+      ],
+    },
+    months: monthAnalyses.map(m => ({
+      month: m.month,
+      kpis: {
+        saleAmount: m.snapshot.saleAmount,
+        saleOrders: m.snapshot.saleOrders,
+        purchaseAmount: m.snapshot.purchaseAmount,
+        purchaseOrders: m.snapshot.purchaseOrders,
+        buyingCustomers: m.snapshot.buyingCustomers,
+        itemsSold: m.snapshot.itemsSold,
+        avgOrderValue: m.snapshot.avgOrderValue,
+      },
+      topAreas: m.snapshot.topAreas,
+      topProducts: m.snapshot.topProducts,
+      topSpenders: m.snapshot.topSpenders,
+      monthSuggestions: compactAiSuggestionsForStage2(m.monthlySuggestions),
+    })),
+  };
+
+  const focusFinal =
+    'Use the last 6 months data to create final 3–5 Burmese priorities for shop operations. Call out what improved/declined across months and what to do next. Return JSON suggestions only.';
+
+  return completeAiSuggestions(finalPayload, focusFinal, 'manual', {
+    persist: false,
+  });
 }
 
 export type CompareAiTopic = 'customers' | 'areas' | 'sales' | 'demand';

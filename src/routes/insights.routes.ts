@@ -5,6 +5,7 @@ import {
   answerOverviewChat,
   generateAiSuggestions,
   generateCompareAiSuggestions,
+  generateSixMonthAiSuggestions,
   getAiSuggestionsStatus,
   isAiInsightsEnabled,
   CompareAiTopic,
@@ -162,6 +163,21 @@ router.post('/suggestions/generate', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to generate suggestions.';
     console.error('[insights/suggestions/generate]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.post('/suggestions/generate-six-month', async (req: AuthRequest, res) => {
+  if (!isAiInsightsEnabled()) {
+    return res.status(404).json({ message: 'AI insights are disabled.' });
+  }
+  try {
+    const pack = await generateSixMonthAiSuggestions(req.user!.id);
+    return res.json({ data: pack });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to generate suggestions.';
+    console.error('[insights/suggestions/generate-six-month]', message);
     return res.status(500).json({ message });
   }
 });
