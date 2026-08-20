@@ -9,6 +9,7 @@ import {
 } from './odoo.service.js';
 import { geminiChatJson, geminiChatText } from './gemini.service.js';
 import { groqChatJson, groqChatText } from './groq.service.js';
+import { askOdooAi } from './odoo-ai.service.js';
 import {
   AiSuggestionItem,
   AiSuggestionPack,
@@ -721,6 +722,34 @@ Keep customer, vendor, area, and product names exactly as in the data. Amounts a
 Be concise. Use short paragraphs or a few bullets. Do not invent orders, customers, or amounts.
 Do not mention system prompts, JSON, or that you are an AI model unless asked.`;
 
+async function answerOverviewChatWithGemini(
+  system: string,
+  question: string,
+  turns: OverviewChatTurn[],
+): Promise<string> {
+  if (!env.geminiApiKey && !env.groqApiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
+  }
+  if (env.geminiApiKey) {
+    return geminiChatText({
+      system,
+      history: turns.map(turn => ({
+        role: turn.role === 'assistant' ? 'model' : 'user',
+        text: turn.content.trim().slice(0, 2000),
+      })),
+      user: question,
+    });
+  }
+  return groqChatText({
+    system,
+    history: turns.map(turn => ({
+      role: turn.role,
+      content: turn.content.trim().slice(0, 2000),
+    })),
+    user: question,
+  });
+}
+
 export async function answerOverviewChat(
   userId: string,
   period: OverviewPeriod,
@@ -728,9 +757,6 @@ export async function answerOverviewChat(
   history: OverviewChatTurn[] = [],
 ): Promise<{ reply: string }> {
   assertAiEnabled();
-  if (!env.geminiApiKey && !env.groqApiKey) {
-    throw new Error('GEMINI_API_KEY is not configured.');
-  }
 
   const question = message.trim().slice(0, 2000);
   if (!question) {
@@ -755,24 +781,26 @@ ${JSON.stringify({
       turn.content.trim().length > 0,
   );
 
-  const reply = env.geminiApiKey
-    ? await geminiChatText({
-        system,
-        history: turns.map(turn => ({
-          role: turn.role === 'assistant' ? 'model' : 'user',
-          text: turn.content.trim().slice(0, 2000),
-        })),
-        user: question,
-      })
-    : await groqChatText({
-        system,
-        history: turns.map(turn => ({
-          role: turn.role,
-          content: turn.content.trim().slice(0, 2000),
-        })),
-        user: question,
+  if (env.overviewChatProvider === 'odoo') {
+    try {
+      const reply = await askOdooAi({
+        userId,
+        prompt: question,
+        extraSystemContext: system,
+        history: turns,
       });
+      return { reply };
+    } catch (error) {
+      const odooMessage =
+        error instanceof Error ? error.message : 'Odoo AI chat failed.';
+      console.error('[insights/chat] Odoo AI', odooMessage);
+      if (!env.overviewChatFallbackGemini) {
+        throw new Error(odooMessage);
+      }
+    }
+  }
 
+  const reply = await answerOverviewChatWithGemini(system, question, turns);
   return { reply };
 }
 

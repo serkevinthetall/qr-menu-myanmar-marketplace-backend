@@ -1014,6 +1014,20 @@ async function odooCallKw<T>(
   return data.result as T;
 }
 
+export async function callOdooKwForUser<T>(
+  userId: string,
+  model: string,
+  method: string,
+  args: unknown[] = [],
+  kwargs: Record<string, unknown> = {},
+): Promise<T> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  return odooCallKw<T>(session.cookie, model, method, args, kwargs);
+}
+
 async function odooExecuteKw<T>(
   uid: number,
   model: string,

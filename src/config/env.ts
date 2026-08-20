@@ -142,4 +142,20 @@ export const env = {
   geminiModel: (process.env.GEMINI_MODEL ?? 'gemini-3.6-flash').trim(),
   groqApiKey: process.env.GROQ_API_KEY ?? '',
   groqModel: (process.env.GROQ_MODEL ?? 'llama-3.1-8b-instant').trim(),
+
+  /**
+   * Overview FAB chat provider. Analyze six-month stays on Gemini.
+   * odoo = Odoo AI agents; gemini = Gemini/Groq (previous behaviour).
+   */
+  overviewChatProvider: (() => {
+    const value = (process.env.OVERVIEW_CHAT_PROVIDER ?? 'odoo')
+      .trim()
+      .toLowerCase();
+    return value === 'gemini' || value === 'groq' ? 'gemini' : 'odoo';
+  })(),
+  odooAiAgentId: Number(process.env.ODOO_AI_AGENT_ID ?? 0) || 0,
+  odooAiAgentName: (process.env.ODOO_AI_AGENT_NAME ?? '').trim(),
+  overviewChatFallbackGemini:
+    (process.env.OVERVIEW_CHAT_FALLBACK_GEMINI ?? 'true').toLowerCase() !==
+    'false',
 };
