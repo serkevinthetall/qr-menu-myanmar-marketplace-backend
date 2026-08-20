@@ -494,7 +494,9 @@ export async function generateSixMonthAiSuggestions(
 ): Promise<AiSuggestionPack> {
   assertAiEnabled();
   if (!env.geminiApiKey && !env.groqApiKey) {
-    throw new Error('GEMINI_API_KEY is not configured.');
+    throw new Error(
+      'Gemini is not working.\n\nGEMINI_API_KEY is not configured.',
+    );
   }
 
   // Daily rollups are already timezone-normalized (Asia/Yangon) when stored.
@@ -524,19 +526,27 @@ export async function generateSixMonthAiSuggestions(
     const focus =
       'This is a monthly review for thisMonth only. Use DATA.month (KPIs + top areas/products/spenders) to give 3–5 actionable Burmese suggestions. Return JSON suggestions only.';
 
-    const pack = await completeAiSuggestions(payload, focus, 'manual', {
-      persist: false,
-    });
-
-    monthAnalyses.push({
-      month: monthKey,
-      snapshot,
-      monthlySuggestions: pack.suggestions,
-    });
+    try {
+      const pack = await completeAiSuggestions(payload, focus, 'manual', {
+        persist: false,
+      });
+      monthAnalyses.push({
+        month: monthKey,
+        snapshot,
+        monthlySuggestions: pack.suggestions,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown error.';
+      throw new Error(
+        `Gemini is not working (month ${monthKey}).\n\n${detail}`,
+      );
+    }
   }
 
   if (monthAnalyses.length === 0) {
-    throw new Error('Failed to build any monthly snapshots for the last 6 months.');
+    throw new Error(
+      'Failed to build any monthly snapshots for the last 6 months.',
+    );
   }
 
   const finalPayload = {
@@ -570,9 +580,14 @@ export async function generateSixMonthAiSuggestions(
   const focusFinal =
     'Use the last 6 months data to create final 3–5 Burmese priorities for shop operations. Call out what improved/declined across months and what to do next. Return JSON suggestions only.';
 
-  return completeAiSuggestions(finalPayload, focusFinal, 'manual', {
-    persist: false,
-  });
+  try {
+    return await completeAiSuggestions(finalPayload, focusFinal, 'manual', {
+      persist: false,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Unknown error.';
+    throw new Error(`Gemini is not working (six-month summary).\n\n${detail}`);
+  }
 }
 
 export type CompareAiTopic = 'customers' | 'areas' | 'sales' | 'demand';
@@ -755,7 +770,7 @@ export async function answerOverviewChat(
   period: OverviewPeriod,
   message: string,
   history: OverviewChatTurn[] = [],
-): Promise<{ reply: string }> {
+): Promise<{ reply: string; provider: 'odoo' | 'gemini'; warning?: string }> {
   assertAiEnabled();
 
   const question = message.trim().slice(0, 2000);
@@ -781,6 +796,7 @@ ${JSON.stringify({
       turn.content.trim().length > 0,
   );
 
+  let odooWarning = '';
   if (env.overviewChatProvider === 'odoo') {
     try {
       const reply = await askOdooAi({
@@ -789,19 +805,35 @@ ${JSON.stringify({
         extraSystemContext: system,
         history: turns,
       });
-      return { reply };
+      return { reply, provider: 'odoo' };
     } catch (error) {
       const odooMessage =
         error instanceof Error ? error.message : 'Odoo AI chat failed.';
       console.error('[insights/chat] Odoo AI', odooMessage);
       if (!env.overviewChatFallbackGemini) {
-        throw new Error(odooMessage);
+        throw new Error(`Odoo AI is not working.\n\n${odooMessage}`);
       }
+      odooWarning = `Odoo AI is not working.\n\n${odooMessage}\n\nThis reply used Gemini instead.`;
     }
   }
 
-  const reply = await answerOverviewChatWithGemini(system, question, turns);
-  return { reply };
+  try {
+    const reply = await answerOverviewChatWithGemini(system, question, turns);
+    return {
+      reply,
+      provider: 'gemini',
+      ...(odooWarning ? { warning: odooWarning } : {}),
+    };
+  } catch (error) {
+    const geminiMessage =
+      error instanceof Error ? error.message : 'Gemini chat failed.';
+    if (odooWarning) {
+      throw new Error(
+        `Odoo AI is not working, and Gemini is not working either.\n\nOdoo: ${odooWarning}\nGemini: ${geminiMessage}`,
+      );
+    }
+    throw new Error(`Gemini is not working.\n\n${geminiMessage}`);
+  }
 }
 
 export async function getAiSuggestionsStatus(): Promise<{
