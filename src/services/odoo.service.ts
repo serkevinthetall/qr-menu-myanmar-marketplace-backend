@@ -3,6 +3,7 @@ import {
   lastPhoneDigits,
   normalizeMyanmarPhone,
 } from '../utils/myanmar-phone.js';
+import { normalizeOdooErrorMessage } from '../utils/odoo-session-error.js';
 import {
   deleteOdooSession,
   getOdooSession,
@@ -1006,8 +1007,9 @@ async function odooCallKw<T>(
   const data = (await response.json()) as JsonRpcResponse<T>;
 
   if (data.error) {
-    const message =
-      data.error.data?.message ?? data.error.message ?? 'Odoo request failed.';
+    const message = normalizeOdooErrorMessage(
+      data.error.data?.message ?? data.error.message ?? 'Odoo request failed.',
+    );
     throw new Error(message);
   }
 
@@ -1025,51 +1027,15 @@ export async function callOdooKwForUser<T>(
   if (!session) {
     throw new Error('Odoo session expired. Please log in again.');
   }
-  return odooCallKw<T>(session.cookie, model, method, args, kwargs);
-}
-
-/**
- * Call an Odoo HTTP JSON-RPC controller (e.g. /ai/generate_response).
- * Used when ORM call_kw cannot reach @api.private AI methods (Odoo 19+).
- */
-export async function callOdooJsonRpcForUser<T>(
-  userId: string,
-  route: string,
-  params: Record<string, unknown> = {},
-): Promise<T> {
-  const session = getOdooSession(userId);
-  if (!session) {
-    throw new Error('Odoo session expired. Please log in again.');
+  try {
+    return await odooCallKw<T>(session.cookie, model, method, args, kwargs);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.toLowerCase().includes('session expired')) {
+      deleteOdooSession(userId);
+    }
+    throw error;
   }
-
-  const path = route.startsWith('/') ? route : `/${route}`;
-  const response = await fetch(`${env.odooUrl}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Cookie: session.cookie,
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'call',
-      params,
-      id: Date.now(),
-    }),
-  });
-
-  const data = (await response.json()) as JsonRpcResponse<T>;
-
-  if (data.error) {
-    const message =
-      data.error.data?.message ?? data.error.message ?? 'Odoo request failed.';
-    throw new Error(message);
-  }
-
-  if (!response.ok) {
-    throw new Error(`Odoo request failed (HTTP ${response.status}).`);
-  }
-
-  return data.result as T;
 }
 
 async function odooExecuteKw<T>(
@@ -1101,8 +1067,9 @@ async function odooExecuteKw<T>(
   const data = (await response.json()) as JsonRpcResponse<T>;
 
   if (data.error) {
-    const message =
-      data.error.data?.message ?? data.error.message ?? 'Odoo request failed.';
+    const message = normalizeOdooErrorMessage(
+      data.error.data?.message ?? data.error.message ?? 'Odoo request failed.',
+    );
     throw new Error(message);
   }
 
@@ -1730,10 +1697,11 @@ export async function fetchOdooQuotations(
   const data = (await response.json()) as JsonRpcResponse<OdooQuotation[]>;
 
   if (data.error) {
-    const message =
+    const message = normalizeOdooErrorMessage(
       data.error.data?.message ??
-      data.error.message ??
-      'Failed to load quotations.';
+        data.error.message ??
+        'Failed to load quotations.',
+    );
     throw new Error(message);
   }
 

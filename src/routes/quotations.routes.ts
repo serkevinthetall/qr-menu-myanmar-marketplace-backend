@@ -10,6 +10,7 @@ import {
   fetchOdooQuotations,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
+import { httpStatusForCaughtError } from '../utils/odoo-session-error.js';
 import {
   mapQuotationDetail,
   mapQuotationSummary,
@@ -81,7 +82,7 @@ router.get('/', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load quotations.';
     console.error('[quotations] Failed to load quotations:', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForCaughtError(error)).json({ message });
   }
 });
 

@@ -9,7 +9,6 @@ import {
 } from './odoo.service.js';
 import { geminiChatJson, geminiChatText } from './gemini.service.js';
 import { groqChatJson, groqChatText } from './groq.service.js';
-import { askOdooAi } from './odoo-ai.service.js';
 import {
   AiSuggestionItem,
   AiSuggestionPack,
@@ -770,7 +769,7 @@ export async function answerOverviewChat(
   period: OverviewPeriod,
   message: string,
   history: OverviewChatTurn[] = [],
-): Promise<{ reply: string; provider: 'odoo' | 'gemini'; warning?: string }> {
+): Promise<{ reply: string; provider: 'gemini' }> {
   assertAiEnabled();
 
   const question = message.trim().slice(0, 2000);
@@ -796,42 +795,12 @@ ${JSON.stringify({
       turn.content.trim().length > 0,
   );
 
-  let odooWarning = '';
-  if (env.overviewChatProvider === 'odoo') {
-    try {
-      const reply = await askOdooAi({
-        userId,
-        prompt: question,
-        extraSystemContext: system,
-        history: turns,
-      });
-      return { reply, provider: 'odoo' };
-    } catch (error) {
-      const odooMessage =
-        error instanceof Error ? error.message : 'Odoo AI chat failed.';
-      console.error('[insights/chat] Odoo AI', odooMessage);
-      if (!env.overviewChatFallbackGemini) {
-        throw new Error(`Odoo AI is not working.\n\n${odooMessage}`);
-      }
-      odooWarning = `Odoo AI is not working.\n\n${odooMessage}\n\nThis reply used Gemini instead.`;
-    }
-  }
-
   try {
     const reply = await answerOverviewChatWithGemini(system, question, turns);
-    return {
-      reply,
-      provider: 'gemini',
-      ...(odooWarning ? { warning: odooWarning } : {}),
-    };
+    return { reply, provider: 'gemini' };
   } catch (error) {
     const geminiMessage =
       error instanceof Error ? error.message : 'Gemini chat failed.';
-    if (odooWarning) {
-      throw new Error(
-        `Odoo AI is not working, and Gemini is not working either.\n\nOdoo: ${odooWarning}\nGemini: ${geminiMessage}`,
-      );
-    }
     throw new Error(`Gemini is not working.\n\n${geminiMessage}`);
   }
 }
