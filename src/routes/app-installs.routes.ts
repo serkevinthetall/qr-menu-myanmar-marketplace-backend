@@ -4,7 +4,7 @@
  */
 import { Router } from 'express';
 
-import { connectMongo, isMongoConfigured } from '../config/mongo.js';
+import { connectMongo, httpStatusForMongoError, isMongoConfigured } from '../config/mongo.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
   APP_INSTALL_REASONS,
@@ -20,6 +20,7 @@ import {
 } from '../models/app-install.model.js';
 import {
   fetchOdooContactById,
+  fetchOdooPartnerTagsByContactIds,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 
@@ -31,7 +32,7 @@ function requireMongo(res: import('express').Response): boolean {
   if (!isMongoConfigured()) {
     res.status(503).json({
       message:
-        'MongoDB is not configured. Set MONGODB_URI on the Vercel backend.',
+        'MongoDB is not configured. Set MONGODB_URI on the Vercel backend project.',
     });
     return false;
   }
@@ -44,6 +45,10 @@ function toStringValue(value: unknown): string {
   }
   return String(value);
 }
+
+type MappedInstall = ReturnType<typeof mapDoc> & {
+  tags: { id: string; name: string }[];
+};
 
 function mapDoc(doc: {
   odooPartnerId: number;
@@ -77,7 +82,41 @@ function mapDoc(doc: {
     updatedAt: doc.updatedAt?.toISOString?.() ?? null,
     updatedByEmail: doc.updatedByEmail || '',
     updatedByName: doc.updatedByName || '',
+    tags: [] as { id: string; name: string }[],
   };
+}
+
+async function enrichWithOdooTags(
+  userId: string,
+  rows: ReturnType<typeof mapDoc>[],
+): Promise<MappedInstall[]> {
+  const partnerIds = rows
+    .map(row => Number(row.odooPartnerId))
+    .filter(id => Number.isFinite(id) && id > 0);
+  if (partnerIds.length === 0) {
+    return rows.map(row => ({ ...row, tags: [] }));
+  }
+
+  try {
+    const tagsByPartner = await fetchOdooPartnerTagsByContactIds(
+      userId,
+      partnerIds,
+    );
+    return rows.map(row => {
+      const partnerId = Number(row.odooPartnerId);
+      const tags = (tagsByPartner.get(partnerId) ?? []).map(tag => ({
+        id: String(tag.id),
+        name: tag.name,
+      }));
+      return { ...row, tags };
+    });
+  } catch (error) {
+    console.error(
+      '[app-installs] Failed to load Odoo tags:',
+      error instanceof Error ? error.message : error,
+    );
+    return rows.map(row => ({ ...row, tags: [] }));
+  }
 }
 
 router.get('/meta', (_req, res) => {
@@ -114,7 +153,7 @@ router.get('/badge', async (_req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load call list badge.';
     console.error('[app-installs] badge', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForMongoError(error)).json({ message });
   }
 });
 
@@ -259,7 +298,7 @@ router.get('/analytics/summary', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load App User List summary.';
     console.error('[app-installs] analytics summary', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForMongoError(error)).json({ message });
   }
 });
 
@@ -327,7 +366,7 @@ router.get('/analytics/timeline', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load App User List timeline.';
     console.error('[app-installs] analytics timeline', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForMongoError(error)).json({ message });
   }
 });
 
@@ -353,7 +392,7 @@ router.get('/map', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load install map.';
     console.error('[app-installs] map', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForMongoError(error)).json({ message });
   }
 });
 
@@ -380,13 +419,26 @@ router.get('/', async (req: AuthRequest, res) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    let data = rows.map(row => mapDoc(row as never));
+    let data = await enrichWithOdooTags(
+      req.user!.id,
+      rows.map(row => mapDoc(row as never)),
+    );
+
+    const tagOptions = new Map<string, { id: string; name: string }>();
+    for (const row of data) {
+      for (const tag of row.tags) {
+        if (!tagOptions.has(tag.id)) {
+          tagOptions.set(tag.id, tag);
+        }
+      }
+    }
 
     if (q) {
       data = data.filter(
         row =>
           row.name.toLowerCase().includes(q) ||
-          row.phone.toLowerCase().includes(q),
+          row.phone.toLowerCase().includes(q) ||
+          row.tags.some(tag => tag.name.toLowerCase().includes(q)),
       );
     }
 
@@ -396,13 +448,16 @@ router.get('/', async (req: AuthRequest, res) => {
         count: data.length,
         status: statuses.length === 1 ? statuses[0] : null,
         statuses,
+        tags: [...tagOptions.values()].sort((a, b) =>
+          a.name.localeCompare(b.name),
+        ),
       },
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load call list.';
     console.error('[app-installs] list', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForMongoError(error)).json({ message });
   }
 });
 
@@ -459,7 +514,7 @@ router.post('/:partnerId/request', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to create install request.';
     console.error('[app-installs] request', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForMongoError(error)).json({ message });
   }
 });
 
@@ -553,7 +608,7 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to update install status.';
     console.error('[app-installs] update', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForMongoError(error)).json({ message });
   }
 });
 
@@ -579,7 +634,7 @@ router.delete('/:partnerId', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to remove from App User List.';
     console.error('[app-installs] delete', message);
-    return res.status(500).json({ message });
+    return res.status(httpStatusForMongoError(error)).json({ message });
   }
 });
 

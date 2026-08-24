@@ -24,6 +24,14 @@ export function getMongoUri(): string {
   );
 }
 
+function formatMongoConnectError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '');
+  if (/MONGODB_URI is not configured/i.test(raw)) {
+    return raw;
+  }
+  return `MongoDB connection failed. ${raw || 'Unknown database error.'}`;
+}
+
 /**
  * Connect once and reuse across Vercel serverless invocations.
  */
@@ -44,17 +52,34 @@ export async function connectMongo(): Promise<typeof mongoose> {
     );
   }
 
-  mongoose.set('strictQuery', true);
-  const conn = await mongoose.connect(uri, {
-    serverSelectionTimeoutMS: 8_000,
-    maxPoolSize: env.nodeEnv === 'production' ? 5 : 10,
-  });
-  globalThis.__qrShopMongoConn = conn;
-  await migrateLegacyNotCalledStatus();
-  globalThis.__qrShopMongoMigrated = true;
-  return conn;
+  try {
+    mongoose.set('strictQuery', true);
+    const conn = await mongoose.connect(uri, {
+      serverSelectionTimeoutMS: 8_000,
+      maxPoolSize: env.nodeEnv === 'production' ? 5 : 10,
+    });
+    globalThis.__qrShopMongoConn = conn;
+    await migrateLegacyNotCalledStatus();
+    globalThis.__qrShopMongoMigrated = true;
+    return conn;
+  } catch (error) {
+    globalThis.__qrShopMongoConn = undefined;
+    throw new Error(formatMongoConnectError(error));
+  }
 }
 
 export function isMongoConfigured(): boolean {
   return Boolean(getMongoUri());
+}
+
+export function httpStatusForMongoError(error: unknown): number {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (
+    /MONGODB_URI is not configured/i.test(message) ||
+    /MongoDB connection failed/i.test(message) ||
+    /mongo/i.test(message)
+  ) {
+    return 503;
+  }
+  return 500;
 }

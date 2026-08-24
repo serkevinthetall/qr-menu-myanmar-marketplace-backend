@@ -2627,6 +2627,93 @@ export async function fetchOdooContactsByIds(
   return contacts;
 }
 
+/**
+ * @temp-feature app-install-call-list
+ * Map partner id → Odoo Tags (`res.partner.category_id` / many2many_tags).
+ */
+export async function fetchOdooPartnerTagsByContactIds(
+  userId: string,
+  contactIds: number[],
+): Promise<Map<number, { id: number; name: string }[]>> {
+  const result = new Map<number, { id: number; name: string }[]>();
+  const session = getOdooSession(userId);
+  if (!session) {
+    return result;
+  }
+
+  const ids = [...new Set(contactIds)].filter(
+    id => Number.isFinite(id) && id > 0,
+  );
+  if (ids.length === 0) {
+    return result;
+  }
+
+  type PartnerTagRow = {
+    id: number;
+    category_id: number[] | false;
+  };
+
+  const partners: PartnerTagRow[] = [];
+  const chunkSize = 80;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const rows = await searchReadOdooRecords<PartnerTagRow>(
+      session,
+      'res.partner',
+      [['id', 'in', chunk]],
+      ['id', 'category_id'],
+      { limit: chunk.length },
+    );
+    partners.push(...rows);
+  }
+
+  const categoryIds = new Set<number>();
+  const partnerCategoryIds = new Map<number, number[]>();
+  for (const partner of partners) {
+    const cats = Array.isArray(partner.category_id)
+      ? partner.category_id.filter(id => Number.isFinite(id) && id > 0)
+      : [];
+    partnerCategoryIds.set(partner.id, cats);
+    for (const catId of cats) {
+      categoryIds.add(catId);
+    }
+  }
+
+  if (categoryIds.size === 0) {
+    for (const partnerId of ids) {
+      result.set(partnerId, []);
+    }
+    return result;
+  }
+
+  const categoryRows = await readOdooRecords<{ id: number; name: string }>(
+    session,
+    'res.partner.category',
+    [...categoryIds],
+    ['id', 'name'],
+  );
+  const nameById = new Map<number, string>();
+  for (const row of categoryRows) {
+    const name = String(row.name ?? '').trim();
+    if (row.id > 0 && name) {
+      nameById.set(row.id, name);
+    }
+  }
+
+  for (const partnerId of ids) {
+    const cats = partnerCategoryIds.get(partnerId) ?? [];
+    const tags = cats
+      .map(catId => {
+        const name = nameById.get(catId);
+        return name ? { id: catId, name } : null;
+      })
+      .filter((tag): tag is { id: number; name: string } => Boolean(tag));
+    result.set(partnerId, tags);
+  }
+
+  return result;
+}
+
 export async function fetchOdooPartnerCategoryNames(
   userId: string,
   categoryIds: number[],
