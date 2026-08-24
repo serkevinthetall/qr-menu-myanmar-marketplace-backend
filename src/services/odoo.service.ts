@@ -2627,15 +2627,54 @@ export async function fetchOdooContactsByIds(
   return contacts;
 }
 
+/** @temp-feature app-install-call-list */
+export type OdooPartnerListEnrichment = {
+  tags: { id: number; name: string }[];
+  /** Odoo Studio township many2one display name. */
+  township: string;
+  street: string;
+  street2: string;
+  city: string;
+  /** One-line street / street2 / city. */
+  address: string;
+};
+
+function relationDisplayName(value: unknown): string {
+  if (Array.isArray(value) && value.length >= 2) {
+    return String(value[1] ?? '').trim();
+  }
+  if (value === false || value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim();
+}
+
+function formatPartnerAddressLines(
+  street: string,
+  street2: string,
+  city: string,
+): string {
+  return [street, street2, city].filter(Boolean).join(', ');
+}
+
 /**
  * @temp-feature app-install-call-list
- * Map partner id → Odoo Tags (`res.partner.category_id` / many2many_tags).
+ * Batch-load Tags + Township + address for Call List / App User List rows
+ * (Mongo only stores partner id/name/phone).
  */
-export async function fetchOdooPartnerTagsByContactIds(
+export async function fetchOdooPartnerEnrichmentByContactIds(
   userId: string,
   contactIds: number[],
-): Promise<Map<number, { id: number; name: string }[]>> {
-  const result = new Map<number, { id: number; name: string }[]>();
+): Promise<Map<number, OdooPartnerListEnrichment>> {
+  const empty = (): OdooPartnerListEnrichment => ({
+    tags: [],
+    township: '',
+    street: '',
+    street2: '',
+    city: '',
+    address: '',
+  });
+  const result = new Map<number, OdooPartnerListEnrichment>();
   const session = getOdooSession(userId);
   if (!session) {
     return result;
@@ -2648,20 +2687,31 @@ export async function fetchOdooPartnerTagsByContactIds(
     return result;
   }
 
-  type PartnerTagRow = {
+  type PartnerEnrichRow = {
     id: number;
     category_id: number[] | false;
+    street: string | false;
+    street2: string | false;
+    city: string | false;
+    [PARTNER_TOWNSHIP_FIELD]?: [number, string] | false;
   };
 
-  const partners: PartnerTagRow[] = [];
+  const partners: PartnerEnrichRow[] = [];
   const chunkSize = 80;
   for (let i = 0; i < ids.length; i += chunkSize) {
     const chunk = ids.slice(i, i + chunkSize);
-    const rows = await searchReadOdooRecords<PartnerTagRow>(
+    const rows = await searchReadOdooRecords<PartnerEnrichRow>(
       session,
       'res.partner',
       [['id', 'in', chunk]],
-      ['id', 'category_id'],
+      [
+        'id',
+        'category_id',
+        'street',
+        'street2',
+        'city',
+        PARTNER_TOWNSHIP_FIELD,
+      ],
       { limit: chunk.length },
     );
     partners.push(...rows);
@@ -2679,28 +2729,29 @@ export async function fetchOdooPartnerTagsByContactIds(
     }
   }
 
-  if (categoryIds.size === 0) {
-    for (const partnerId of ids) {
-      result.set(partnerId, []);
-    }
-    return result;
-  }
-
-  const categoryRows = await readOdooRecords<{ id: number; name: string }>(
-    session,
-    'res.partner.category',
-    [...categoryIds],
-    ['id', 'name'],
-  );
   const nameById = new Map<number, string>();
-  for (const row of categoryRows) {
-    const name = String(row.name ?? '').trim();
-    if (row.id > 0 && name) {
-      nameById.set(row.id, name);
+  if (categoryIds.size > 0) {
+    const categoryRows = await readOdooRecords<{ id: number; name: string }>(
+      session,
+      'res.partner.category',
+      [...categoryIds],
+      ['id', 'name'],
+    );
+    for (const row of categoryRows) {
+      const name = String(row.name ?? '').trim();
+      if (row.id > 0 && name) {
+        nameById.set(row.id, name);
+      }
     }
   }
 
+  const byId = new Map(partners.map(partner => [partner.id, partner]));
   for (const partnerId of ids) {
+    const partner = byId.get(partnerId);
+    if (!partner) {
+      result.set(partnerId, empty());
+      continue;
+    }
     const cats = partnerCategoryIds.get(partnerId) ?? [];
     const tags = cats
       .map(catId => {
@@ -2708,9 +2759,48 @@ export async function fetchOdooPartnerTagsByContactIds(
         return name ? { id: catId, name } : null;
       })
       .filter((tag): tag is { id: number; name: string } => Boolean(tag));
-    result.set(partnerId, tags);
+    const street =
+      partner.street === false || partner.street == null
+        ? ''
+        : String(partner.street).trim();
+    const street2 =
+      partner.street2 === false || partner.street2 == null
+        ? ''
+        : String(partner.street2).trim();
+    const city =
+      partner.city === false || partner.city == null
+        ? ''
+        : String(partner.city).trim();
+    const township = relationDisplayName(partner[PARTNER_TOWNSHIP_FIELD]);
+    result.set(partnerId, {
+      tags,
+      township,
+      street,
+      street2,
+      city,
+      address: formatPartnerAddressLines(street, street2, city),
+    });
   }
 
+  return result;
+}
+
+/**
+ * @temp-feature app-install-call-list
+ * Map partner id → Odoo Tags (`res.partner.category_id` / many2many_tags).
+ */
+export async function fetchOdooPartnerTagsByContactIds(
+  userId: string,
+  contactIds: number[],
+): Promise<Map<number, { id: number; name: string }[]>> {
+  const enriched = await fetchOdooPartnerEnrichmentByContactIds(
+    userId,
+    contactIds,
+  );
+  const result = new Map<number, { id: number; name: string }[]>();
+  for (const [partnerId, meta] of enriched) {
+    result.set(partnerId, meta.tags);
+  }
   return result;
 }
 

@@ -20,7 +20,7 @@ import {
 } from '../models/app-install.model.js';
 import {
   fetchOdooContactById,
-  fetchOdooPartnerTagsByContactIds,
+  fetchOdooPartnerEnrichmentByContactIds,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 
@@ -46,9 +46,7 @@ function toStringValue(value: unknown): string {
   return String(value);
 }
 
-type MappedInstall = ReturnType<typeof mapDoc> & {
-  tags: { id: string; name: string }[];
-};
+type MappedInstall = ReturnType<typeof mapDoc>;
 
 function mapDoc(doc: {
   odooPartnerId: number;
@@ -73,6 +71,11 @@ function mapDoc(doc: {
     odooPartnerId: String(doc.odooPartnerId),
     name: doc.partnerName || '',
     phone: doc.partnerPhone || '',
+    township: '',
+    street: '',
+    street2: '',
+    city: '',
+    address: '',
     status,
     statusLabel: appInstallStatusLabel(status),
     reason: doc.reason ?? null,
@@ -86,7 +89,7 @@ function mapDoc(doc: {
   };
 }
 
-async function enrichWithOdooTags(
+async function enrichWithOdooPartnerMeta(
   userId: string,
   rows: ReturnType<typeof mapDoc>[],
 ): Promise<MappedInstall[]> {
@@ -94,28 +97,39 @@ async function enrichWithOdooTags(
     .map(row => Number(row.odooPartnerId))
     .filter(id => Number.isFinite(id) && id > 0);
   if (partnerIds.length === 0) {
-    return rows.map(row => ({ ...row, tags: [] }));
+    return rows;
   }
 
   try {
-    const tagsByPartner = await fetchOdooPartnerTagsByContactIds(
+    const metaByPartner = await fetchOdooPartnerEnrichmentByContactIds(
       userId,
       partnerIds,
     );
     return rows.map(row => {
       const partnerId = Number(row.odooPartnerId);
-      const tags = (tagsByPartner.get(partnerId) ?? []).map(tag => ({
-        id: String(tag.id),
-        name: tag.name,
-      }));
-      return { ...row, tags };
+      const meta = metaByPartner.get(partnerId);
+      if (!meta) {
+        return row;
+      }
+      return {
+        ...row,
+        township: meta.township,
+        street: meta.street,
+        street2: meta.street2,
+        city: meta.city,
+        address: meta.address,
+        tags: meta.tags.map(tag => ({
+          id: String(tag.id),
+          name: tag.name,
+        })),
+      };
     });
   } catch (error) {
     console.error(
-      '[app-installs] Failed to load Odoo tags:',
+      '[app-installs] Failed to load Odoo partner meta:',
       error instanceof Error ? error.message : error,
     );
-    return rows.map(row => ({ ...row, tags: [] }));
+    return rows;
   }
 }
 
@@ -419,17 +433,21 @@ router.get('/', async (req: AuthRequest, res) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    let data = await enrichWithOdooTags(
+    let data = await enrichWithOdooPartnerMeta(
       req.user!.id,
       rows.map(row => mapDoc(row as never)),
     );
 
     const tagOptions = new Map<string, { id: string; name: string }>();
+    const townshipOptions = new Set<string>();
     for (const row of data) {
       for (const tag of row.tags) {
         if (!tagOptions.has(tag.id)) {
           tagOptions.set(tag.id, tag);
         }
+      }
+      if (row.township) {
+        townshipOptions.add(row.township);
       }
     }
 
@@ -438,6 +456,8 @@ router.get('/', async (req: AuthRequest, res) => {
         row =>
           row.name.toLowerCase().includes(q) ||
           row.phone.toLowerCase().includes(q) ||
+          row.township.toLowerCase().includes(q) ||
+          row.address.toLowerCase().includes(q) ||
           row.tags.some(tag => tag.name.toLowerCase().includes(q)),
       );
     }
@@ -451,6 +471,7 @@ router.get('/', async (req: AuthRequest, res) => {
         tags: [...tagOptions.values()].sort((a, b) =>
           a.name.localeCompare(b.name),
         ),
+        townships: [...townshipOptions].sort((a, b) => a.localeCompare(b)),
       },
     });
   } catch (error) {
