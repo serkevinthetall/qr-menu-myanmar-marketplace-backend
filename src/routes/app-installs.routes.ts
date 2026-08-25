@@ -384,6 +384,157 @@ router.get('/analytics/timeline', async (req: AuthRequest, res) => {
   }
 });
 
+/**
+ * Status pie + township/tag bars for Overview App User List detail.
+ * Township and tags come from Odoo (not Mongo).
+ */
+router.get('/analytics/breakdown', async (req: AuthRequest, res) => {
+  if (!requireMongo(res)) return;
+  try {
+    await connectMongo();
+    const range = parseAppUserListRange(req.query.range);
+    const status = parseAppUserListAnalyticsStatus(req.query.status);
+    const { start, end } = buildBucketsAndWindow(range);
+
+    const rangeMatch: Record<string, unknown> = {
+      requestedAt: { $gte: start, $lt: end },
+    };
+
+    const statusRows = await AppInstallModel.aggregate<{
+      _id: string;
+      count: number;
+    }>([
+      { $match: rangeMatch },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]);
+
+    const statusCount = new Map<string, number>();
+    for (const row of statusRows) {
+      const key = normalizeAppInstallStatus(row._id);
+      statusCount.set(key, (statusCount.get(key) ?? 0) + Number(row.count || 0));
+    }
+
+    const byStatus = APP_INSTALL_STATUSES.map(id => ({
+      id,
+      label: appInstallStatusLabel(id),
+      count: statusCount.get(id) ?? 0,
+    })).filter(row => row.count > 0);
+
+    const metaMatch: Record<string, unknown> = { ...rangeMatch };
+    // Township/tag “who installed” defaults to installed; honor explicit status filter.
+    if (status !== 'all') {
+      metaMatch.status = status;
+    } else {
+      metaMatch.status = 'installed';
+    }
+
+    const docs = await AppInstallModel.find(metaMatch)
+      .select({ odooPartnerId: 1 })
+      .lean();
+    const partnerIds = docs
+      .map(doc => Number(doc.odooPartnerId))
+      .filter(id => Number.isFinite(id) && id > 0);
+
+    const townshipCount = new Map<string, number>();
+    const tagCount = new Map<string, { id: string; label: string; count: number }>();
+    let unknownTownship = 0;
+    let unknownTag = 0;
+
+    if (partnerIds.length > 0) {
+      try {
+        const metaByPartner = await fetchOdooPartnerEnrichmentByContactIds(
+          req.user!.id,
+          partnerIds,
+        );
+        for (const partnerId of partnerIds) {
+          const meta = metaByPartner.get(partnerId);
+          const township = (meta?.township ?? '').trim();
+          if (!township) {
+            unknownTownship += 1;
+          } else {
+            townshipCount.set(township, (townshipCount.get(township) ?? 0) + 1);
+          }
+
+          const tags = meta?.tags ?? [];
+          if (tags.length === 0) {
+            unknownTag += 1;
+          } else {
+            for (const tag of tags) {
+              const key = String(tag.id);
+              const existing = tagCount.get(key);
+              if (existing) {
+                existing.count += 1;
+              } else {
+                tagCount.set(key, {
+                  id: key,
+                  label: tag.name,
+                  count: 1,
+                });
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error(
+          '[app-installs] breakdown Odoo enrichment failed:',
+          error instanceof Error ? error.message : error,
+        );
+        unknownTownship = partnerIds.length;
+        unknownTag = partnerIds.length;
+      }
+    }
+
+    const byTownship = [...townshipCount.entries()]
+      .map(([name, count]) => ({
+        id: name,
+        label: name,
+        count,
+      }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+    if (unknownTownship > 0) {
+      byTownship.push({
+        id: '__unknown__',
+        label: 'No township',
+        count: unknownTownship,
+      });
+    }
+
+    const byTag = [...tagCount.values()].sort(
+      (a, b) => b.count - a.count || a.label.localeCompare(b.label),
+    );
+
+    if (unknownTag > 0) {
+      byTag.push({
+        id: '__unknown__',
+        label: 'No tag',
+        count: unknownTag,
+      });
+    }
+
+    const metaStatus = status === 'all' ? 'installed' : status;
+
+    return res.json({
+      data: {
+        range,
+        status,
+        byStatus,
+        byTownship,
+        byTag,
+        townshipStatus: metaStatus,
+        tagStatus: metaStatus,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to load App User List breakdown.';
+    console.error('[app-installs] analytics breakdown', message);
+    return res.status(httpStatusForMongoError(error)).json({ message });
+  }
+});
+
 /** Map of odooPartnerId -> install record (for Contact list badges). */
 router.get('/map', async (req: AuthRequest, res) => {
   if (!requireMongo(res)) return;
