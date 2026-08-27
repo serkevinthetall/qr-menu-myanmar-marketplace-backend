@@ -5,7 +5,6 @@
  */
 import mongoose from 'mongoose';
 
-import { seedDefaultAppPromotersIfEmpty } from '../models/app-promoter.model.js';
 import { migrateLegacyNotCalledStatus } from '../models/app-install.model.js';
 import { env } from './env.js';
 
@@ -41,7 +40,6 @@ export async function connectMongo(): Promise<typeof mongoose> {
   if (existing && existing.connection.readyState === 1) {
     if (!globalThis.__qrShopMongoMigrated) {
       await migrateLegacyNotCalledStatus();
-      await seedDefaultAppPromotersIfEmpty();
       globalThis.__qrShopMongoMigrated = true;
     }
     return existing;
@@ -62,7 +60,6 @@ export async function connectMongo(): Promise<typeof mongoose> {
     });
     globalThis.__qrShopMongoConn = conn;
     await migrateLegacyNotCalledStatus();
-    await seedDefaultAppPromotersIfEmpty();
     globalThis.__qrShopMongoMigrated = true;
     return conn;
   } catch (error) {

@@ -19,10 +19,8 @@ import {
   type AppInstallReason,
 } from '../models/app-install.model.js';
 import {
-  findActiveAppPromoterByName,
+  findActiveOdooAppPromoterByName,
   normalizePromoterName,
-} from '../models/app-promoter.model.js';
-import {
   fetchOdooContactById,
   fetchOdooPartnerEnrichmentByContactIds,
   updateOdooPartnerAppPromoter,
@@ -754,7 +752,10 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
     await connectMongo();
 
     if (statusRaw === 'installed') {
-      const promoter = await findActiveAppPromoterByName(appPromoter);
+      const promoter = await findActiveOdooAppPromoterByName(
+        req.user!.id,
+        appPromoter,
+      );
       if (!promoter) {
         return res.status(400).json({
           message:

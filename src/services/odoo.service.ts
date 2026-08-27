@@ -2614,6 +2614,113 @@ export async function updateOdooPartnerAppPromoter(
   });
 }
 
+/** Studio model: Contacts → App Promoter (rates). */
+export const ODOO_APP_PROMOTER_MODEL = 'x_app_promoter';
+export const ODOO_APP_PROMOTER_NAME_FIELD = 'x_name';
+export const ODOO_APP_PROMOTER_AMOUNT_FIELD = 'x_studio_amount_per_customer';
+export const ODOO_APP_PROMOTER_ACTIVE_FIELD = 'x_studio_active';
+
+export type OdooAppPromoter = {
+  id: number;
+  name: string;
+  amountPerCustomer: number;
+  active: boolean;
+};
+
+export function normalizePromoterName(value: unknown): string {
+  if (value === false || value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim().replace(/\s+/g, ' ');
+}
+
+type OdooAppPromoterRow = {
+  id: number;
+  x_name?: string | false;
+  x_studio_amount_per_customer?: number | false;
+  x_studio_active?: boolean | false;
+};
+
+function mapOdooAppPromoter(row: OdooAppPromoterRow): OdooAppPromoter {
+  const amountRaw = row.x_studio_amount_per_customer;
+  const amount =
+    typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : 0;
+  return {
+    id: row.id,
+    name: normalizePromoterName(row.x_name),
+    amountPerCustomer: amount,
+    active: row.x_studio_active !== false,
+  };
+}
+
+/** List App Promoters from Odoo Studio model. */
+export async function fetchOdooAppPromoters(
+  userId: string,
+  options?: { activeOnly?: boolean },
+): Promise<OdooAppPromoter[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const domain: unknown[] = options?.activeOnly
+    ? [[ODOO_APP_PROMOTER_ACTIVE_FIELD, '=', true]]
+    : [];
+
+  const rows = await searchReadOdooRecords<OdooAppPromoterRow>(
+    session,
+    ODOO_APP_PROMOTER_MODEL,
+    domain,
+    [
+      'id',
+      ODOO_APP_PROMOTER_NAME_FIELD,
+      ODOO_APP_PROMOTER_AMOUNT_FIELD,
+      ODOO_APP_PROMOTER_ACTIVE_FIELD,
+    ],
+    { order: `${ODOO_APP_PROMOTER_NAME_FIELD} asc`, limit: 5000 },
+  );
+
+  return rows
+    .map(mapOdooAppPromoter)
+    .filter(row => row.name.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Active App Promoter by exact name (for Installed validation). */
+export async function findActiveOdooAppPromoterByName(
+  userId: string,
+  name: unknown,
+): Promise<OdooAppPromoter | null> {
+  const normalized = normalizePromoterName(name);
+  if (!normalized) {
+    return null;
+  }
+
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const rows = await searchReadOdooRecords<OdooAppPromoterRow>(
+    session,
+    ODOO_APP_PROMOTER_MODEL,
+    [
+      [ODOO_APP_PROMOTER_NAME_FIELD, '=', normalized],
+      [ODOO_APP_PROMOTER_ACTIVE_FIELD, '=', true],
+    ],
+    [
+      'id',
+      ODOO_APP_PROMOTER_NAME_FIELD,
+      ODOO_APP_PROMOTER_AMOUNT_FIELD,
+      ODOO_APP_PROMOTER_ACTIVE_FIELD,
+    ],
+    { order: 'id asc', limit: 1 },
+  );
+
+  const first = rows[0];
+  return first ? mapOdooAppPromoter(first) : null;
+}
+
 /** @temp-feature app-install-call-list — only used by Call List; delete with that feature. */
 export async function fetchOdooContactsByIds(
   userId: string,
