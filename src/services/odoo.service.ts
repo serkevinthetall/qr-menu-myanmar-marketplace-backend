@@ -116,6 +116,9 @@ type PartnerLocationSource = {
  * Custom Odoo Studio fields on res.partner. Technical name -> app key.
  * Add new fields here as they are created in Odoo.
  */
+/** Studio char — App Promoter name set from website install Request. */
+export const PARTNER_APP_PROMOTER_FIELD = 'x_studio_app_promoter';
+
 export const CONTACT_CUSTOM_FIELDS = {
   x_studio_monthly_activity: 'activity',
   x_studio_many2one_field_8u9_1jp4l7r0g: 'township',
@@ -2585,6 +2588,30 @@ export async function fetchOdooContactById(
     contactId,
     CONTACT_DETAIL_FIELDS,
   );
+}
+
+/** Write App Promoter name on res.partner (Studio x_studio_app_promoter). */
+export async function updateOdooPartnerAppPromoter(
+  userId: string,
+  partnerId: number,
+  appPromoter: string,
+): Promise<void> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    throw new Error('Invalid contact id.');
+  }
+
+  const name = String(appPromoter ?? '').trim();
+  if (!name) {
+    throw new Error('App Promoter is required.');
+  }
+
+  await writeOdooRecordAsUser(session, 'res.partner', partnerId, {
+    [PARTNER_APP_PROMOTER_FIELD]: name,
+  });
 }
 
 /** @temp-feature app-install-call-list — only used by Call List; delete with that feature. */
@@ -5293,5 +5320,249 @@ export async function fetchOverviewDemand(
     compareRange: { from: prevFromStr, to: prevToStr },
     compareLabel: 'Last month',
     products,
+  };
+}
+
+export type OverviewSixMonthExportTopic =
+  | 'customers'
+  | 'sales'
+  | 'products';
+
+export type OverviewSixMonthExport = {
+  topic: OverviewSixMonthExportTopic;
+  range: { from: string; to: string };
+  months: string[];
+  headers: string[];
+  rows: Array<Array<string | number>>;
+  filename: string;
+  sheetName: string;
+};
+
+/** Last 6 calendar months in Asia/Yangon, including the current month. */
+function buildSixMonthWindow(now = new Date()) {
+  const { y, m } = yangonParts(now);
+  const fromUtc = Date.UTC(y, m - 6, 1) - 6.5 * 60 * 60 * 1000;
+  const toUtc = Date.UTC(y, m, 1) - 6.5 * 60 * 60 * 1000;
+  const months: string[] = [];
+  for (let i = 5; i >= 0; i -= 1) {
+    const monthIndex = m - 1 - i;
+    const year = y + Math.floor(monthIndex / 12);
+    const mon = ((monthIndex % 12) + 12) % 12;
+    months.push(`${year}-${pad2(mon + 1)}`);
+  }
+  return {
+    from: new Date(fromUtc),
+    to: new Date(toUtc),
+    months,
+  };
+}
+
+function yangonMonthKeyFromOdooDate(value: string | false | undefined): string {
+  const date = parseOdooDate(value);
+  if (!date) {
+    return '';
+  }
+  const { y, m } = yangonParts(date);
+  return `${y}-${pad2(m)}`;
+}
+
+async function searchReadAllPaidSaleOrders(
+  session: { cookie: string; uid: number },
+  fromStr: string,
+  toStr: string,
+): Promise<OdooSaleOrder[]> {
+  const pageSize = 500;
+  const maxPages = 40;
+  const all: OdooSaleOrder[] = [];
+  const domain = paidSaleDomain(fromStr, toStr);
+  const fields = [
+    'id',
+    'name',
+    'date_order',
+    'partner_id',
+    'amount_total',
+    'state',
+  ];
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const rows = await searchReadOdooRecords<OdooSaleOrder>(
+      session,
+      'sale.order',
+      domain,
+      fields,
+      {
+        order: 'date_order asc, id asc',
+        limit: pageSize,
+        offset: page * pageSize,
+      },
+    );
+    all.push(...rows);
+    if (rows.length < pageSize) {
+      break;
+    }
+  }
+
+  return all.filter(order => (Number(order.amount_total) || 0) > 0);
+}
+
+/**
+ * Export rows for Overview View detail — last 6 Yangon calendar months.
+ * topic: customers | sales | products
+ */
+export async function fetchOverviewSixMonthExport(
+  userId: string,
+  topic: OverviewSixMonthExportTopic,
+): Promise<OverviewSixMonthExport> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const window = buildSixMonthWindow();
+  const fromStr = toOdooDatetime(window.from);
+  const toStr = toOdooDatetime(window.to);
+  const stamp = yangonDateKey(new Date());
+  const orders = await searchReadAllPaidSaleOrders(session, fromStr, toStr);
+
+  if (topic === 'sales') {
+    const rows = orders.map(order => {
+      const month = yangonMonthKeyFromOdooDate(order.date_order);
+      const partner = Array.isArray(order.partner_id)
+        ? String(order.partner_id[1] || '').trim()
+        : '';
+      return [
+        month,
+        String(order.name || ''),
+        partner || '—',
+        Number(order.amount_total) || 0,
+        String(order.date_order || ''),
+        String(order.state || ''),
+      ];
+    });
+
+    return {
+      topic,
+      range: { from: fromStr, to: toStr },
+      months: window.months,
+      headers: [
+        'Month',
+        'Order',
+        'Customer',
+        'Total (MMK)',
+        'Order date',
+        'Status',
+      ],
+      rows,
+      filename: `overview-sale-orders-6-months-${stamp}.xlsx`,
+      sheetName: 'Sale orders',
+    };
+  }
+
+  if (topic === 'customers') {
+    const spend = new Map<
+      string,
+      { month: string; id: string; name: string; total: number; orders: number }
+    >();
+
+    for (const order of orders) {
+      const month = yangonMonthKeyFromOdooDate(order.date_order);
+      if (!month) {
+        continue;
+      }
+      const id = Array.isArray(order.partner_id)
+        ? String(order.partner_id[0] || '')
+        : '';
+      const name = Array.isArray(order.partner_id)
+        ? String(order.partner_id[1] || '').trim()
+        : '';
+      if (!id) {
+        continue;
+      }
+      const key = `${month}::${id}`;
+      const existing = spend.get(key) || {
+        month,
+        id,
+        name: name || 'Unknown customer',
+        total: 0,
+        orders: 0,
+      };
+      existing.total += Number(order.amount_total) || 0;
+      existing.orders += 1;
+      if (name) {
+        existing.name = name;
+      }
+      spend.set(key, existing);
+    }
+
+    const rows = [...spend.values()]
+      .sort(
+        (a, b) =>
+          a.month.localeCompare(b.month) ||
+          b.total - a.total ||
+          a.name.localeCompare(b.name),
+      )
+      .map(row => [row.month, row.id, row.name, row.total, row.orders]);
+
+    return {
+      topic,
+      range: { from: fromStr, to: toStr },
+      months: window.months,
+      headers: [
+        'Month',
+        'Customer ID',
+        'Customer',
+        'Total (MMK)',
+        'Orders',
+      ],
+      rows,
+      filename: `overview-customers-6-months-${stamp}.xlsx`,
+      sheetName: 'Customers',
+    };
+  }
+
+  // products — demand by month from sale order lines
+  const byMonthIds = new Map<string, number[]>();
+  for (const order of orders) {
+    const month = yangonMonthKeyFromOdooDate(order.date_order);
+    if (!month) {
+      continue;
+    }
+    const list = byMonthIds.get(month) || [];
+    list.push(order.id);
+    byMonthIds.set(month, list);
+  }
+
+  const productRows: Array<Array<string | number>> = [];
+  for (const month of window.months) {
+    const ids = byMonthIds.get(month) || [];
+    const totals = await productDemandFromOrders(session, ids);
+    const sorted = [...totals.values()].sort(
+      (a, b) => b.qty - a.qty || b.revenue - a.revenue,
+    );
+    for (const product of sorted) {
+      productRows.push([
+        month,
+        product.id,
+        product.name,
+        product.qty,
+        product.revenue,
+      ]);
+    }
+  }
+
+  return {
+    topic,
+    range: { from: fromStr, to: toStr },
+    months: window.months,
+    headers: [
+      'Month',
+      'Product ID',
+      'Product',
+      'Qty',
+      'Revenue (MMK)',
+    ],
+    rows: productRows,
+    filename: `overview-products-6-months-${stamp}.xlsx`,
+    sheetName: 'Products',
   };
 }

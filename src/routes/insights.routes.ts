@@ -16,8 +16,10 @@ import {
   fetchOverviewInsights,
   fetchOverviewOrders,
   fetchOverviewRankings,
+  fetchOverviewSixMonthExport,
   OverviewOrderType,
   OverviewPeriod,
+  OverviewSixMonthExportTopic,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 
@@ -41,6 +43,16 @@ function parseCompare(raw: unknown): boolean {
 function parseOrderType(raw: unknown): OverviewOrderType {
   const value = String(raw ?? 'sale').trim().toLowerCase();
   return value === 'purchase' ? 'purchase' : 'sale';
+}
+
+function parseSixMonthExportTopic(raw: unknown): OverviewSixMonthExportTopic {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (value === 'customers' || value === 'sales' || value === 'products') {
+    return value;
+  }
+  throw new Error(
+    'Invalid export topic. Use customers, sales, or products.',
+  );
 }
 
 function parseSlot(raw: unknown): 'monday' | 'friday' | 'monthly' | 'manual' {
@@ -114,6 +126,23 @@ router.get('/demand', async (req: AuthRequest, res) => {
       error instanceof Error ? error.message : 'Failed to load demand.';
     console.error('[insights/demand]', message);
     return res.status(500).json({ message });
+  }
+});
+
+/** Six-month Excel source rows for Overview View detail pages. */
+router.get('/export/six-month', async (req: AuthRequest, res) => {
+  try {
+    const topic = parseSixMonthExportTopic(req.query.topic);
+    const data = await fetchOverviewSixMonthExport(req.user!.id, topic);
+    return res.json({ data });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to build six-month export.';
+    console.error('[insights/export/six-month]', message);
+    const status = /Invalid export topic/i.test(message) ? 400 : 500;
+    return res.status(status).json({ message });
   }
 });
 

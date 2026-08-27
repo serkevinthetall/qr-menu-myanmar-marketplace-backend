@@ -40,6 +40,8 @@ const AppInstallSchema = new Schema(
     },
     partnerName: { type: String, default: '' },
     partnerPhone: { type: String, default: '' },
+    /** Selected App Promoter name from website module. */
+    appPromoter: { type: String, default: '' },
     status: {
       type: String,
       enum: APP_INSTALL_STATUSES,
