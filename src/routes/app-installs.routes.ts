@@ -658,18 +658,6 @@ router.post('/:partnerId/request', async (req: AuthRequest, res) => {
       });
     }
 
-    const appPromoter = normalizePromoterName(req.body?.appPromoter);
-    if (!appPromoter) {
-      return res.status(400).json({ message: 'Please select an App Promoter.' });
-    }
-
-    const promoter = await findActiveAppPromoterByName(appPromoter);
-    if (!promoter) {
-      return res.status(400).json({
-        message: 'Invalid App Promoter. Choose a name from the App Promoter list.',
-      });
-    }
-
     const nameFromBody = toStringValue(req.body?.name).trim();
     const phoneFromBody = toStringValue(req.body?.phone).trim();
     let partnerName = nameFromBody;
@@ -686,22 +674,11 @@ router.post('/:partnerId/request', async (req: AuthRequest, res) => {
       }
     }
 
-    try {
-      await updateOdooPartnerAppPromoter(req.user!.id, partnerId, appPromoter);
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Failed to save App Promoter on the Odoo contact.';
-      console.error('[app-installs] request odoo promoter', message);
-      return res.status(502).json({ message });
-    }
-
     const created = await AppInstallModel.create({
       odooPartnerId: partnerId,
       partnerName,
       partnerPhone,
-      appPromoter,
+      appPromoter: '',
       status: 'new',
       reason: null,
       requestedAt: new Date(),
