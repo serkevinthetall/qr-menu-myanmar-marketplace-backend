@@ -1,12 +1,15 @@
 /**
- * App Promoter list from Odoo Studio model x_app_promoter.
- * Manage names/amounts in Odoo; website is read-only for the Installed dropdown.
+ * App Promoter CRUD via Odoo Studio model x_app_promoter.
+ * Website creates/edits names, amounts, and active flag in Odoo.
  */
 import { Router } from 'express';
 
 import { authMiddleware } from '../middleware/auth.js';
 import {
+  createOdooAppPromoter,
+  deleteOdooAppPromoter,
   fetchOdooAppPromoters,
+  updateOdooAppPromoter,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 
@@ -30,6 +33,20 @@ function mapPromoter(row: {
   };
 }
 
+function odooStatus(message: string): number {
+  if (/session expired/i.test(message)) return 401;
+  if (/already exists/i.test(message)) return 409;
+  if (/not found/i.test(message)) return 404;
+  if (
+    /required|too long|invalid|nothing to update|must be a number/i.test(
+      message,
+    )
+  ) {
+    return 400;
+  }
+  return 502;
+}
+
 /** List promoters from Odoo. ?active=true = Installed dropdown. */
 router.get('/', async (req: AuthRequest, res) => {
   try {
@@ -42,27 +59,62 @@ router.get('/', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load App Promoters.';
     console.error('[app-promoters] list', message);
-    const status = /session expired/i.test(message) ? 401 : 502;
-    return res.status(status).json({ message });
+    return res.status(odooStatus(message)).json({ message });
   }
 });
 
-router.post('/', (_req, res) => {
-  return res.status(405).json({
-    message: 'Create App Promoters in Odoo (Contacts → App Promoter).',
-  });
+router.post('/', async (req: AuthRequest, res) => {
+  try {
+    const created = await createOdooAppPromoter(req.user!.id, {
+      name: req.body?.name,
+      amountPerCustomer: req.body?.amountPerCustomer,
+      active: req.body?.active,
+    });
+    return res.status(201).json({ data: mapPromoter(created) });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to create App Promoter.';
+    console.error('[app-promoters] create', message);
+    return res.status(odooStatus(message)).json({ message });
+  }
 });
 
-router.put('/:id', (_req, res) => {
-  return res.status(405).json({
-    message: 'Edit App Promoters in Odoo (Contacts → App Promoter).',
-  });
+router.put('/:id', async (req: AuthRequest, res) => {
+  const id = Number(String(req.params.id ?? '').trim());
+  if (!Number.isFinite(id) || id <= 0) {
+    return res.status(400).json({ message: 'Invalid promoter id.' });
+  }
+
+  try {
+    const updated = await updateOdooAppPromoter(req.user!.id, id, {
+      name: req.body?.name,
+      amountPerCustomer: req.body?.amountPerCustomer,
+      active: req.body?.active,
+    });
+    return res.json({ data: mapPromoter(updated) });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to update App Promoter.';
+    console.error('[app-promoters] update', message);
+    return res.status(odooStatus(message)).json({ message });
+  }
 });
 
-router.delete('/:id', (_req, res) => {
-  return res.status(405).json({
-    message: 'Delete or archive App Promoters in Odoo.',
-  });
+router.delete('/:id', async (req: AuthRequest, res) => {
+  const id = Number(String(req.params.id ?? '').trim());
+  if (!Number.isFinite(id) || id <= 0) {
+    return res.status(400).json({ message: 'Invalid promoter id.' });
+  }
+
+  try {
+    await deleteOdooAppPromoter(req.user!.id, id);
+    return res.json({ data: { id: String(id), removed: true } });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to delete App Promoter.';
+    console.error('[app-promoters] delete', message);
+    return res.status(odooStatus(message)).json({ message });
+  }
 });
 
 export default router;

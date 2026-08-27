@@ -2721,6 +2721,191 @@ export async function findActiveOdooAppPromoterByName(
   return first ? mapOdooAppPromoter(first) : null;
 }
 
+async function findOdooAppPromoterByName(
+  session: { cookie: string; uid: number },
+  name: string,
+  excludeId?: number,
+): Promise<OdooAppPromoter | null> {
+  const domain: unknown[] = [[ODOO_APP_PROMOTER_NAME_FIELD, '=', name]];
+  if (excludeId != null && Number.isFinite(excludeId) && excludeId > 0) {
+    domain.push(['id', '!=', excludeId]);
+  }
+
+  const rows = await searchReadOdooRecords<OdooAppPromoterRow>(
+    session,
+    ODOO_APP_PROMOTER_MODEL,
+    domain,
+    [
+      'id',
+      ODOO_APP_PROMOTER_NAME_FIELD,
+      ODOO_APP_PROMOTER_AMOUNT_FIELD,
+      ODOO_APP_PROMOTER_ACTIVE_FIELD,
+    ],
+    { order: 'id asc', limit: 1 },
+  );
+
+  const first = rows[0];
+  return first ? mapOdooAppPromoter(first) : null;
+}
+
+async function readOdooAppPromoterById(
+  session: { cookie: string; uid: number },
+  id: number,
+): Promise<OdooAppPromoter | null> {
+  const row = await readOdooRecordAsUser<OdooAppPromoterRow>(
+    session,
+    ODOO_APP_PROMOTER_MODEL,
+    id,
+    [
+      'id',
+      ODOO_APP_PROMOTER_NAME_FIELD,
+      ODOO_APP_PROMOTER_AMOUNT_FIELD,
+      ODOO_APP_PROMOTER_ACTIVE_FIELD,
+    ],
+  );
+  return row ? mapOdooAppPromoter(row) : null;
+}
+
+export function parseAppPromoterAmount(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+  const n = typeof value === 'number' ? value : Number(String(value).trim());
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error('Amount per customer must be a number ≥ 0.');
+  }
+  return n;
+}
+
+/** Create App Promoter in Odoo Studio model. */
+export async function createOdooAppPromoter(
+  userId: string,
+  input: { name: unknown; amountPerCustomer?: unknown; active?: unknown },
+): Promise<OdooAppPromoter> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const name = normalizePromoterName(input.name);
+  if (!name) {
+    throw new Error('Promoter name is required.');
+  }
+  if (name.length > 120) {
+    throw new Error('Promoter name is too long.');
+  }
+
+  const amountParsed = parseAppPromoterAmount(input.amountPerCustomer);
+  const amount = amountParsed ?? 0;
+  const active = input.active === undefined ? true : Boolean(input.active);
+
+  const duplicate = await findOdooAppPromoterByName(session, name);
+  if (duplicate) {
+    throw new Error('This App Promoter already exists.');
+  }
+
+  const id = await createOdooRecordAsUser(session, ODOO_APP_PROMOTER_MODEL, {
+    [ODOO_APP_PROMOTER_NAME_FIELD]: name,
+    [ODOO_APP_PROMOTER_AMOUNT_FIELD]: amount,
+    [ODOO_APP_PROMOTER_ACTIVE_FIELD]: active,
+  });
+
+  const created = await readOdooAppPromoterById(session, id);
+  if (!created) {
+    throw new Error('App Promoter was created but could not be reloaded.');
+  }
+  return created;
+}
+
+/** Update App Promoter in Odoo (name, amount, and/or active). */
+export async function updateOdooAppPromoter(
+  userId: string,
+  promoterId: number,
+  input: { name?: unknown; amountPerCustomer?: unknown; active?: unknown },
+): Promise<OdooAppPromoter> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(promoterId) || promoterId <= 0) {
+    throw new Error('Invalid promoter id.');
+  }
+
+  const existing = await readOdooAppPromoterById(session, promoterId);
+  if (!existing) {
+    throw new Error('App Promoter not found.');
+  }
+
+  const values: Record<string, unknown> = {};
+
+  if (input.name !== undefined) {
+    const name = normalizePromoterName(input.name);
+    if (!name) {
+      throw new Error('Promoter name is required.');
+    }
+    if (name.length > 120) {
+      throw new Error('Promoter name is too long.');
+    }
+    const duplicate = await findOdooAppPromoterByName(session, name, promoterId);
+    if (duplicate) {
+      throw new Error('This App Promoter already exists.');
+    }
+    values[ODOO_APP_PROMOTER_NAME_FIELD] = name;
+  }
+
+  if (input.amountPerCustomer !== undefined) {
+    const amount = parseAppPromoterAmount(input.amountPerCustomer);
+    if (amount === null) {
+      throw new Error('Amount per customer is required.');
+    }
+    values[ODOO_APP_PROMOTER_AMOUNT_FIELD] = amount;
+  }
+
+  if (input.active !== undefined) {
+    values[ODOO_APP_PROMOTER_ACTIVE_FIELD] = Boolean(input.active);
+  }
+
+  if (Object.keys(values).length === 0) {
+    throw new Error('Nothing to update.');
+  }
+
+  await writeOdooRecordAsUser(
+    session,
+    ODOO_APP_PROMOTER_MODEL,
+    promoterId,
+    values,
+  );
+
+  const updated = await readOdooAppPromoterById(session, promoterId);
+  if (!updated) {
+    throw new Error('App Promoter was updated but could not be reloaded.');
+  }
+  return updated;
+}
+
+/** Delete App Promoter from Odoo. */
+export async function deleteOdooAppPromoter(
+  userId: string,
+  promoterId: number,
+): Promise<void> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(promoterId) || promoterId <= 0) {
+    throw new Error('Invalid promoter id.');
+  }
+
+  const existing = await readOdooAppPromoterById(session, promoterId);
+  if (!existing) {
+    throw new Error('App Promoter not found.');
+  }
+
+  await odooCallKw(session.cookie, ODOO_APP_PROMOTER_MODEL, 'unlink', [
+    [promoterId],
+  ]);
+}
+
 /** @temp-feature app-install-call-list — only used by Call List; delete with that feature. */
 export async function fetchOdooContactsByIds(
   userId: string,
