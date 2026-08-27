@@ -765,8 +765,37 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
     }
   }
 
+  let appPromoter = '';
+  if (statusRaw === 'installed') {
+    appPromoter = normalizePromoterName(req.body?.appPromoter);
+    if (!appPromoter) {
+      return res.status(400).json({ message: 'Please select an App Promoter.' });
+    }
+  }
+
   try {
     await connectMongo();
+
+    if (statusRaw === 'installed') {
+      const promoter = await findActiveAppPromoterByName(appPromoter);
+      if (!promoter) {
+        return res.status(400).json({
+          message:
+            'Invalid App Promoter. Choose a name from the App Promoter list.',
+        });
+      }
+      try {
+        await updateOdooPartnerAppPromoter(req.user!.id, partnerId, appPromoter);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Failed to save App Promoter on the Odoo contact.';
+        console.error('[app-installs] update odoo promoter', message);
+        return res.status(502).json({ message });
+      }
+    }
+
     let doc = await AppInstallModel.findOne({ odooPartnerId: partnerId });
     if (!doc) {
       const contact = await fetchOdooContactById(req.user!.id, partnerId);
@@ -777,6 +806,7 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
         odooPartnerId: partnerId,
         partnerName: toStringValue(contact.name),
         partnerPhone: toStringValue(contact.phone),
+        appPromoter: statusRaw === 'installed' ? appPromoter : '',
         status: statusRaw,
         reason,
         reasonNote,
@@ -800,6 +830,9 @@ router.put('/:partnerId', async (req: AuthRequest, res) => {
       } else if (reason) {
         doc.reason = reason;
         doc.reasonNote = reason === 'other' ? reasonNote : '';
+      }
+      if (statusRaw === 'installed') {
+        doc.appPromoter = appPromoter;
       }
       doc.updatedByEmail = req.user?.email ?? '';
       doc.updatedByName = req.user?.name ?? '';
