@@ -2995,6 +2995,175 @@ export async function deleteOdooAppPromoter(
   ]);
 }
 
+/** Studio model: App Promoter Commission lines. */
+export const ODOO_APP_PROMOTER_COMMISSION_MODEL = 'x_app_promoter_commiss';
+export const ODOO_COMMISSION_TITLE_FIELD = 'x_name';
+export const ODOO_COMMISSION_DATE_FIELD = 'x_studio_date1';
+export const ODOO_COMMISSION_PROMOTER_FIELD = 'x_studio_promoter';
+export const ODOO_COMMISSION_CUSTOMER_FIELD = 'x_studio_customer';
+export const ODOO_COMMISSION_AMOUNT_FIELD = 'x_studio_amount';
+export const ODOO_COMMISSION_UPDATED_FIELD = 'x_studio_updated_date';
+export const ODOO_COMMISSION_SALE_ORDER_FIELD = 'x_studio_sale_order_number';
+
+const ODOO_COMMISSION_READ_FIELDS = [
+  'id',
+  ODOO_COMMISSION_TITLE_FIELD,
+  ODOO_COMMISSION_DATE_FIELD,
+  ODOO_COMMISSION_PROMOTER_FIELD,
+  ODOO_COMMISSION_CUSTOMER_FIELD,
+  ODOO_COMMISSION_AMOUNT_FIELD,
+  ODOO_COMMISSION_UPDATED_FIELD,
+  ODOO_COMMISSION_SALE_ORDER_FIELD,
+] as const;
+
+export type OdooAppPromoterCommission = {
+  id: number;
+  title: string;
+  date: string;
+  promoterId: number;
+  promoterName: string;
+  customerId: number;
+  customerName: string;
+  amount: number;
+  updatedAt: string | null;
+  saleOrderId: number;
+  saleOrderName: string;
+};
+
+type OdooAppPromoterCommissionRow = {
+  id: number;
+  x_name?: string | false;
+  x_studio_date1?: string | false;
+  x_studio_promoter?: [number, string] | false;
+  x_studio_customer?: [number, string] | false;
+  x_studio_amount?: number | false;
+  x_studio_updated_date?: string | false;
+  x_studio_sale_order_number?: [number, string] | false;
+};
+
+function parseCommissionMonthKey(
+  month: string,
+): { start: string; end: string } | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(month.trim());
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const monthNum = Number(match[2]);
+  if (!Number.isFinite(year) || monthNum < 1 || monthNum > 12) {
+    return null;
+  }
+  const mm = String(monthNum).padStart(2, '0');
+  const lastDay = new Date(year, monthNum, 0).getDate();
+  return {
+    start: `${year}-${mm}-01`,
+    end: `${year}-${mm}-${String(lastDay).padStart(2, '0')}`,
+  };
+}
+
+function mapOdooAppPromoterCommission(
+  row: OdooAppPromoterCommissionRow,
+): OdooAppPromoterCommission {
+  const amountRaw = row.x_studio_amount;
+  const amount =
+    typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : 0;
+  const dateRaw = row.x_studio_date1;
+  const date =
+    typeof dateRaw === 'string' && dateRaw.trim() ? dateRaw.trim().slice(0, 10) : '';
+  const updatedRaw = row.x_studio_updated_date;
+  const updatedAt =
+    typeof updatedRaw === 'string' && updatedRaw.trim() ? updatedRaw.trim() : null;
+
+  return {
+    id: row.id,
+    title: normalizePromoterName(row.x_name),
+    date,
+    promoterId: odooRelationId(row.x_studio_promoter) ?? 0,
+    promoterName: odooRelationLabel(row.x_studio_promoter),
+    customerId: odooRelationId(row.x_studio_customer) ?? 0,
+    customerName: odooRelationLabel(row.x_studio_customer),
+    amount,
+    updatedAt,
+    saleOrderId: odooRelationId(row.x_studio_sale_order_number) ?? 0,
+    saleOrderName: odooRelationLabel(row.x_studio_sale_order_number),
+  };
+}
+
+/** List App Promoter Commission lines from Odoo (filter by month and/or promoter). */
+export async function fetchOdooAppPromoterCommissions(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    month?: string;
+    promoterId?: number;
+    q?: string;
+  },
+): Promise<OdooAppPromoterCommission[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset >= 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [];
+  const monthRange = options?.month ? parseCommissionMonthKey(options.month) : null;
+  if (monthRange) {
+    domain.push([ODOO_COMMISSION_DATE_FIELD, '>=', monthRange.start]);
+    domain.push([ODOO_COMMISSION_DATE_FIELD, '<=', monthRange.end]);
+  }
+
+  if (
+    options?.promoterId !== undefined &&
+    Number.isFinite(options.promoterId) &&
+    options.promoterId > 0
+  ) {
+    domain.push([ODOO_COMMISSION_PROMOTER_FIELD, '=', options.promoterId]);
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    const search: unknown[] = [
+      '|',
+      '|',
+      '|',
+      [ODOO_COMMISSION_TITLE_FIELD, 'ilike', q],
+      ['x_studio_customer.name', 'ilike', q],
+      ['x_studio_sale_order_number.name', 'ilike', q],
+      ['x_studio_promoter.x_name', 'ilike', q],
+    ];
+    if (domain.length === 0) {
+      domain.push(...search);
+    } else {
+      const combined = [...Array(domain.length).fill('&'), ...domain, ...search];
+      domain.length = 0;
+      domain.push(...combined);
+    }
+  }
+
+  const rows = await searchReadOdooRecords<OdooAppPromoterCommissionRow>(
+    session,
+    ODOO_APP_PROMOTER_COMMISSION_MODEL,
+    domain,
+    [...ODOO_COMMISSION_READ_FIELDS],
+    {
+      order: `${ODOO_COMMISSION_DATE_FIELD} desc, id desc`,
+      limit,
+      offset,
+    },
+  );
+
+  return rows.map(mapOdooAppPromoterCommission);
+}
+
 /** @temp-feature app-install-call-list — only used by Call List; delete with that feature. */
 export async function fetchOdooContactsByIds(
   userId: string,

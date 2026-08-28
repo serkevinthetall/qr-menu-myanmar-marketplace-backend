@@ -29,6 +29,7 @@ import { Router } from 'express';
 import appRoutes from './app/index.js';
 // @temp-feature app-install-call-list — remove import + mount below when dropping feature
 import appInstallsRoutes from './app-installs.routes.js';
+import appPromoterCommissionsRoutes from './app-promoter-commissions.routes.js';
 import appPromotersRoutes from './app-promoters.routes.js';
 import authRoutes from './auth.routes.js';
 import customersRoutes from './customers.routes.js';
@@ -69,6 +70,7 @@ router.use('/insights', insightsRoutes);
 if (env.enableAppInstallCallList) {
   router.use('/app-installs', appInstallsRoutes);
   router.use('/app-promoters', appPromotersRoutes);
+  router.use('/app-promoter-commissions', appPromoterCommissionsRoutes);
 }
 
 /** Handheld sales-rep app API (separate from web ERP routes). */
