@@ -2618,14 +2618,16 @@ export async function updateOdooPartnerAppPromoter(
 export const ODOO_APP_PROMOTER_MODEL = 'x_app_promoter';
 export const ODOO_APP_PROMOTER_NAME_FIELD = 'x_name';
 export const ODOO_APP_PROMOTER_AMOUNT_FIELD = 'x_studio_amount_per_customer';
-export const ODOO_APP_PROMOTER_ACTIVE_FIELD = 'x_studio_active';
+/** Studio boolean on x_app_promoter (not x_studio_active). */
+export const ODOO_APP_PROMOTER_ACTIVE_FIELD = 'x_active';
 
 const ODOO_APP_PROMOTER_READ_FIELDS = [
   'id',
   ODOO_APP_PROMOTER_NAME_FIELD,
   ODOO_APP_PROMOTER_AMOUNT_FIELD,
-  'active',
   ODOO_APP_PROMOTER_ACTIVE_FIELD,
+  'x_studio_active',
+  'active',
 ] as const;
 
 export type OdooAppPromoter = {
@@ -2646,8 +2648,9 @@ type OdooAppPromoterRow = {
   id: number;
   x_name?: string | false;
   x_studio_amount_per_customer?: number | false;
-  active?: boolean | number | string | false;
+  x_active?: boolean | number | string | false;
   x_studio_active?: boolean | number | string | false;
+  active?: boolean | number | string | false;
 };
 
 function parseOdooActiveFlag(value: unknown): boolean | undefined {
@@ -2676,21 +2679,24 @@ function parseOdooActiveFlag(value: unknown): boolean | undefined {
 }
 
 function isOdooAppPromoterActive(row: OdooAppPromoterRow): boolean {
-  const studio = parseOdooActiveFlag(row.x_studio_active);
-  if (studio !== undefined) {
-    return studio;
-  }
-  const standard = parseOdooActiveFlag(row.active);
-  if (standard !== undefined) {
-    return standard;
+  for (const field of [
+    row.x_active,
+    row.x_studio_active,
+    row.active,
+  ] as const) {
+    const parsed = parseOdooActiveFlag(field);
+    if (parsed !== undefined) {
+      return parsed;
+    }
   }
   return true;
 }
 
 function appPromoterActiveWriteValues(active: boolean): Record<string, unknown> {
   return {
-    active,
     [ODOO_APP_PROMOTER_ACTIVE_FIELD]: active,
+    x_studio_active: active,
+    active,
   };
 }
 
