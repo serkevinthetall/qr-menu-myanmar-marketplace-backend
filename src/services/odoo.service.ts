@@ -2620,6 +2620,14 @@ export const ODOO_APP_PROMOTER_NAME_FIELD = 'x_name';
 export const ODOO_APP_PROMOTER_AMOUNT_FIELD = 'x_studio_amount_per_customer';
 export const ODOO_APP_PROMOTER_ACTIVE_FIELD = 'x_studio_active';
 
+const ODOO_APP_PROMOTER_READ_FIELDS = [
+  'id',
+  ODOO_APP_PROMOTER_NAME_FIELD,
+  ODOO_APP_PROMOTER_AMOUNT_FIELD,
+  'active',
+  ODOO_APP_PROMOTER_ACTIVE_FIELD,
+] as const;
+
 export type OdooAppPromoter = {
   id: number;
   name: string;
@@ -2638,8 +2646,116 @@ type OdooAppPromoterRow = {
   id: number;
   x_name?: string | false;
   x_studio_amount_per_customer?: number | false;
-  x_studio_active?: boolean | false;
+  active?: boolean | number | string | false;
+  x_studio_active?: boolean | number | string | false;
 };
+
+function parseOdooActiveFlag(value: unknown): boolean | undefined {
+  if (value === undefined || value === null || value === false) {
+    if (value === false) {
+      return false;
+    }
+    return undefined;
+  }
+  if (value === true || value === 1 || value === '1' || value === 'true') {
+    return true;
+  }
+  if (value === 0 || value === '0' || value === 'false' || value === 'no') {
+    return false;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'yes' || normalized === 'active') {
+      return true;
+    }
+    if (normalized === 'no' || normalized === 'inactive' || normalized === 'hidden') {
+      return false;
+    }
+  }
+  return Boolean(value);
+}
+
+function isOdooAppPromoterActive(row: OdooAppPromoterRow): boolean {
+  const studio = parseOdooActiveFlag(row.x_studio_active);
+  if (studio !== undefined) {
+    return studio;
+  }
+  const standard = parseOdooActiveFlag(row.active);
+  if (standard !== undefined) {
+    return standard;
+  }
+  return true;
+}
+
+function appPromoterActiveWriteValues(active: boolean): Record<string, unknown> {
+  return {
+    active,
+    [ODOO_APP_PROMOTER_ACTIVE_FIELD]: active,
+  };
+}
+
+async function searchReadOdooAppPromoterRows(
+  session: { cookie: string; uid: number },
+  domain: unknown[],
+  kwargs: Record<string, unknown> = {},
+): Promise<OdooAppPromoterRow[]> {
+  try {
+    return await searchReadOdooRecords<OdooAppPromoterRow>(
+      session,
+      ODOO_APP_PROMOTER_MODEL,
+      domain,
+      [...ODOO_APP_PROMOTER_READ_FIELDS],
+      kwargs,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/invalid field.*\bactive\b/i.test(message)) {
+      throw error;
+    }
+    return searchReadOdooRecords<OdooAppPromoterRow>(
+      session,
+      ODOO_APP_PROMOTER_MODEL,
+      domain,
+      [
+        'id',
+        ODOO_APP_PROMOTER_NAME_FIELD,
+        ODOO_APP_PROMOTER_AMOUNT_FIELD,
+        ODOO_APP_PROMOTER_ACTIVE_FIELD,
+      ],
+      kwargs,
+    );
+  }
+}
+
+async function readOdooAppPromoterRowById(
+  session: { cookie: string; uid: number },
+  id: number,
+): Promise<OdooAppPromoterRow | null> {
+  try {
+    return await readOdooRecordAsUser<OdooAppPromoterRow>(
+      session,
+      ODOO_APP_PROMOTER_MODEL,
+      id,
+      [...ODOO_APP_PROMOTER_READ_FIELDS],
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/invalid field.*\bactive\b/i.test(message)) {
+      throw error;
+    }
+    return readOdooRecordAsUser<OdooAppPromoterRow>(
+      session,
+      ODOO_APP_PROMOTER_MODEL,
+      id,
+      [
+        'id',
+        ODOO_APP_PROMOTER_NAME_FIELD,
+        ODOO_APP_PROMOTER_AMOUNT_FIELD,
+        ODOO_APP_PROMOTER_ACTIVE_FIELD,
+      ],
+    );
+  }
+}
 
 function mapOdooAppPromoter(row: OdooAppPromoterRow): OdooAppPromoter {
   const amountRaw = row.x_studio_amount_per_customer;
@@ -2649,7 +2765,7 @@ function mapOdooAppPromoter(row: OdooAppPromoterRow): OdooAppPromoter {
     id: row.id,
     name: normalizePromoterName(row.x_name),
     amountPerCustomer: amount,
-    active: row.x_studio_active !== false,
+    active: isOdooAppPromoterActive(row),
   };
 }
 
@@ -2663,27 +2779,22 @@ export async function fetchOdooAppPromoters(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  const domain: unknown[] = options?.activeOnly
-    ? [[ODOO_APP_PROMOTER_ACTIVE_FIELD, '=', true]]
-    : [];
+  const domain: unknown[] = [];
 
-  const rows = await searchReadOdooRecords<OdooAppPromoterRow>(
-    session,
-    ODOO_APP_PROMOTER_MODEL,
-    domain,
-    [
-      'id',
-      ODOO_APP_PROMOTER_NAME_FIELD,
-      ODOO_APP_PROMOTER_AMOUNT_FIELD,
-      ODOO_APP_PROMOTER_ACTIVE_FIELD,
-    ],
-    { order: `${ODOO_APP_PROMOTER_NAME_FIELD} asc`, limit: 5000 },
-  );
+  const rows = await searchReadOdooAppPromoterRows(session, domain, {
+    order: `${ODOO_APP_PROMOTER_NAME_FIELD} asc`,
+    limit: 5000,
+  });
 
-  return rows
+  let results = rows
     .map(mapOdooAppPromoter)
-    .filter(row => row.name.length > 0)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .filter(row => row.name.length > 0);
+
+  if (options?.activeOnly) {
+    results = results.filter(row => row.active);
+  }
+
+  return results.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Active App Promoter by exact name (for Installed validation). */
@@ -2701,24 +2812,14 @@ export async function findActiveOdooAppPromoterByName(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  const rows = await searchReadOdooRecords<OdooAppPromoterRow>(
+  const rows = await searchReadOdooAppPromoterRows(
     session,
-    ODOO_APP_PROMOTER_MODEL,
-    [
-      [ODOO_APP_PROMOTER_NAME_FIELD, '=', normalized],
-      [ODOO_APP_PROMOTER_ACTIVE_FIELD, '=', true],
-    ],
-    [
-      'id',
-      ODOO_APP_PROMOTER_NAME_FIELD,
-      ODOO_APP_PROMOTER_AMOUNT_FIELD,
-      ODOO_APP_PROMOTER_ACTIVE_FIELD,
-    ],
-    { order: 'id asc', limit: 1 },
+    [[ODOO_APP_PROMOTER_NAME_FIELD, '=', normalized]],
+    { order: 'id asc', limit: 20 },
   );
 
-  const first = rows[0];
-  return first ? mapOdooAppPromoter(first) : null;
+  const match = rows.map(mapOdooAppPromoter).find(row => row.active);
+  return match ?? null;
 }
 
 async function findOdooAppPromoterByName(
@@ -2731,18 +2832,10 @@ async function findOdooAppPromoterByName(
     domain.push(['id', '!=', excludeId]);
   }
 
-  const rows = await searchReadOdooRecords<OdooAppPromoterRow>(
-    session,
-    ODOO_APP_PROMOTER_MODEL,
-    domain,
-    [
-      'id',
-      ODOO_APP_PROMOTER_NAME_FIELD,
-      ODOO_APP_PROMOTER_AMOUNT_FIELD,
-      ODOO_APP_PROMOTER_ACTIVE_FIELD,
-    ],
-    { order: 'id asc', limit: 1 },
-  );
+  const rows = await searchReadOdooAppPromoterRows(session, domain, {
+    order: 'id asc',
+    limit: 1,
+  });
 
   const first = rows[0];
   return first ? mapOdooAppPromoter(first) : null;
@@ -2752,17 +2845,7 @@ async function readOdooAppPromoterById(
   session: { cookie: string; uid: number },
   id: number,
 ): Promise<OdooAppPromoter | null> {
-  const row = await readOdooRecordAsUser<OdooAppPromoterRow>(
-    session,
-    ODOO_APP_PROMOTER_MODEL,
-    id,
-    [
-      'id',
-      ODOO_APP_PROMOTER_NAME_FIELD,
-      ODOO_APP_PROMOTER_AMOUNT_FIELD,
-      ODOO_APP_PROMOTER_ACTIVE_FIELD,
-    ],
-  );
+  const row = await readOdooAppPromoterRowById(session, id);
   return row ? mapOdooAppPromoter(row) : null;
 }
 
@@ -2807,7 +2890,7 @@ export async function createOdooAppPromoter(
   const id = await createOdooRecordAsUser(session, ODOO_APP_PROMOTER_MODEL, {
     [ODOO_APP_PROMOTER_NAME_FIELD]: name,
     [ODOO_APP_PROMOTER_AMOUNT_FIELD]: amount,
-    [ODOO_APP_PROMOTER_ACTIVE_FIELD]: active,
+    ...appPromoterActiveWriteValues(active),
   });
 
   const created = await readOdooAppPromoterById(session, id);
@@ -2862,7 +2945,7 @@ export async function updateOdooAppPromoter(
   }
 
   if (input.active !== undefined) {
-    values[ODOO_APP_PROMOTER_ACTIVE_FIELD] = Boolean(input.active);
+    Object.assign(values, appPromoterActiveWriteValues(Boolean(input.active)));
   }
 
   if (Object.keys(values).length === 0) {
