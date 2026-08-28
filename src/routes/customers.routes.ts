@@ -525,6 +525,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
       countryId: location.countryId,
       tags: tagNames.join(', '),
       memberCode: toStringValue(contact.x_studio_member_code),
+      appPromoter: toStringValue(contact.x_studio_app_promoter),
     };
 
     return res.json({ data });

@@ -144,6 +144,7 @@ const CONTACT_DETAIL_FIELDS = [
   'country_id',
   'category_id',
   'x_studio_member_code',
+  PARTNER_APP_PROMOTER_FIELD,
   PARTNER_TOWNSHIP_FIELD,
 ];
 
@@ -161,6 +162,7 @@ type OdooContactDetail = {
   country_id: [number, string] | false;
   category_id: number[] | false;
   x_studio_member_code: string | false;
+  x_studio_app_promoter?: string | false;
   x_studio_many2one_field_8u9_1jp4l7r0g: [number, string] | false;
 };
 
