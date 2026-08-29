@@ -8,6 +8,7 @@ import { Router } from 'express';
  *   /api/auth/*
  *   /api/customers/*
  *   /api/products/*
+ *   /api/inventory/*
  *   /api/quotations/*
  *   /api/memberships/*
  *   /api/membership-coupons/*
@@ -34,6 +35,7 @@ import appPromotersRoutes from './app-promoters.routes.js';
 import authRoutes from './auth.routes.js';
 import customersRoutes from './customers.routes.js';
 import insightsRoutes from './insights.routes.js';
+import inventoryRoutes from './inventory.routes.js';
 import membershipCouponsRoutes from './membership-coupons.routes.js';
 import membershipsRoutes from './memberships.routes.js';
 import memberRequestsRoutes from './member-requests.routes.js';
@@ -58,6 +60,7 @@ router.get('/health', (_req, res) => {
 router.use('/auth', authRoutes);
 router.use('/customers', customersRoutes);
 router.use('/products', productsRoutes);
+router.use('/inventory', inventoryRoutes);
 router.use('/quotations', quotationsRoutes);
 router.use('/memberships', membershipsRoutes);
 router.use('/membership-coupons', membershipCouponsRoutes);

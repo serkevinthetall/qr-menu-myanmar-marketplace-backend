@@ -333,6 +333,7 @@ export async function fetchOdooProducts(
     'name',
     'default_code',
     'list_price',
+    'qty_available',
     'active',
     'categ_id',
     'uom_id',
@@ -366,7 +367,7 @@ export async function fetchOdooProducts(
                 : favoriteField?.model === 'product.template'
                   ? `product_tmpl_id.${favoriteField.name} desc, name asc`
                   : 'name asc',
-            // Avoid image_128 (huge payload) and qty_available (slow computed field).
+            // Avoid image_128 (huge payload). qty_available is included for Stock / On Hand.
             limit,
             offset,
           },
@@ -553,6 +554,301 @@ export async function updateOdooProductFavorite(
     [favoriteField.name]: value,
   });
   return true;
+}
+
+/* ─── Inventory: On Hand + Moves History ─── */
+
+export type OdooOnHandProduct = {
+  id: number;
+  name: string;
+  sku: string;
+  category: string;
+  onHand: number;
+  unit: string;
+};
+
+export type OdooStockMoveLine = {
+  id: number;
+  date: string;
+  reference: string;
+  productId: number;
+  productName: string;
+  category: string;
+  fromLocation: string;
+  toLocation: string;
+  quantity: number;
+  unit: string;
+  state: string;
+};
+
+type OdooOnHandRow = {
+  id: number;
+  name: string;
+  default_code?: string | false;
+  categ_id?: [number, string] | false;
+  qty_available?: number;
+  uom_id?: [number, string] | false;
+};
+
+type OdooStockMoveLineRow = {
+  id: number;
+  date?: string | false;
+  reference?: string | false;
+  product_id?: [number, string] | false;
+  location_id?: [number, string] | false;
+  location_dest_id?: [number, string] | false;
+  quantity?: number;
+  qty_done?: number;
+  uom_id?: [number, string] | false;
+  product_uom_id?: [number, string] | false;
+  state?: string | false;
+};
+
+function parseYearMonthKey(
+  month: string,
+): { start: string; end: string; startDt: string; endDt: string } | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(month.trim());
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const monthNum = Number(match[2]);
+  if (!Number.isFinite(year) || monthNum < 1 || monthNum > 12) {
+    return null;
+  }
+  const mm = String(monthNum).padStart(2, '0');
+  const lastDay = new Date(year, monthNum, 0).getDate();
+  const endDay = String(lastDay).padStart(2, '0');
+  return {
+    start: `${year}-${mm}-01`,
+    end: `${year}-${mm}-${endDay}`,
+    startDt: `${year}-${mm}-01 00:00:00`,
+    endDt: `${year}-${mm}-${endDay} 23:59:59`,
+  };
+}
+
+/** Current on-hand quantities for stockable products (accounting stock check). */
+export async function fetchOdooOnHandProducts(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+    category?: string;
+    hideZero?: boolean;
+  },
+): Promise<OdooOnHandProduct[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 500;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const q = String(options?.q ?? '').trim();
+  const category = String(options?.category ?? '').trim();
+
+  const baseDomain: unknown[] = [['active', '=', true]];
+  if (q) {
+    baseDomain.push('|');
+    baseDomain.push(['name', 'ilike', q]);
+    baseDomain.push(['default_code', 'ilike', q]);
+  }
+  if (category) {
+    baseDomain.push(['categ_id.name', 'ilike', category]);
+  }
+
+  const fields = [
+    'id',
+    'name',
+    'default_code',
+    'categ_id',
+    'qty_available',
+    'uom_id',
+  ];
+
+  const stockableDomain = [
+    ...baseDomain,
+    ['type', 'in', ['product', 'consu']],
+  ];
+
+  let rows: OdooOnHandRow[] = [];
+  try {
+    rows = await searchReadOdooRecords<OdooOnHandRow>(
+      session,
+      'product.product',
+      stockableDomain,
+      fields,
+      { order: 'name asc', limit, offset },
+    );
+  } catch {
+    rows = await searchReadOdooRecords<OdooOnHandRow>(
+      session,
+      'product.product',
+      baseDomain,
+      fields,
+      { order: 'name asc', limit, offset },
+    );
+  }
+
+  let mapped = rows.map(row => ({
+    id: row.id,
+    name: odooString(row.name) || `Product #${row.id}`,
+    sku: odooString(row.default_code),
+    category: odooRelationLabel(row.categ_id),
+    onHand: Number(row.qty_available) || 0,
+    unit: odooRelationLabel(row.uom_id) || 'Units',
+  }));
+
+  if (options?.hideZero) {
+    mapped = mapped.filter(row => row.onHand !== 0);
+  }
+
+  return mapped;
+}
+
+/** Done stock move lines (Moves History) for a month — accounting audit trail. */
+export async function fetchOdooStockMoveLines(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    month?: string;
+    q?: string;
+  },
+): Promise<OdooStockMoveLine[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset >= 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [['state', '=', 'done']];
+  const monthRange = options?.month ? parseYearMonthKey(options.month) : null;
+  if (monthRange) {
+    domain.push(['date', '>=', monthRange.startDt]);
+    domain.push(['date', '<=', monthRange.endDt]);
+  }
+
+  const q = String(options?.q ?? '').trim();
+  if (q) {
+    domain.push('|');
+    domain.push('|');
+    domain.push(['reference', 'ilike', q]);
+    domain.push(['product_id', 'ilike', q]);
+    domain.push(['location_dest_id', 'ilike', q]);
+  }
+
+  const fieldsWithQty = [
+    'id',
+    'date',
+    'reference',
+    'product_id',
+    'location_id',
+    'location_dest_id',
+    'quantity',
+    'uom_id',
+    'state',
+  ];
+  const fieldsWithQtyDone = [
+    'id',
+    'date',
+    'reference',
+    'product_id',
+    'location_id',
+    'location_dest_id',
+    'qty_done',
+    'product_uom_id',
+    'state',
+  ];
+
+  let rows: OdooStockMoveLineRow[] = [];
+  try {
+    rows = await searchReadOdooRecords<OdooStockMoveLineRow>(
+      session,
+      'stock.move.line',
+      domain,
+      fieldsWithQty,
+      { order: 'date desc, id desc', limit, offset },
+    );
+  } catch {
+    rows = await searchReadOdooRecords<OdooStockMoveLineRow>(
+      session,
+      'stock.move.line',
+      domain,
+      fieldsWithQtyDone,
+      { order: 'date desc, id desc', limit, offset },
+    );
+  }
+
+  const productIds = [
+    ...new Set(
+      rows
+        .map(row => odooRelationId(row.product_id))
+        .filter(id => id > 0),
+    ),
+  ];
+
+  const categoryByProductId = new Map<number, string>();
+  if (productIds.length > 0) {
+    try {
+      type CatRow = { id: number; categ_id?: [number, string] | false };
+      const products = await searchReadOdooRecords<CatRow>(
+        session,
+        'product.product',
+        [['id', 'in', productIds]],
+        ['id', 'categ_id'],
+        { limit: productIds.length },
+      );
+      for (const product of products) {
+        categoryByProductId.set(product.id, odooRelationLabel(product.categ_id));
+      }
+    } catch {
+      // Category enrichment is optional.
+    }
+  }
+
+  return rows.map(row => {
+    const productId = odooRelationId(row.product_id);
+    const qty =
+      typeof row.quantity === 'number' && Number.isFinite(row.quantity)
+        ? row.quantity
+        : typeof row.qty_done === 'number' && Number.isFinite(row.qty_done)
+          ? row.qty_done
+          : 0;
+    const dateRaw = typeof row.date === 'string' ? row.date : '';
+    return {
+      id: row.id,
+      date: dateRaw,
+      reference: odooString(row.reference),
+      productId,
+      productName: odooRelationLabel(row.product_id),
+      category: categoryByProductId.get(productId) || '',
+      fromLocation: odooRelationLabel(row.location_id),
+      toLocation: odooRelationLabel(row.location_dest_id),
+      quantity: qty,
+      unit:
+        odooRelationLabel(row.uom_id) ||
+        odooRelationLabel(row.product_uom_id) ||
+        'Units',
+      state: odooString(row.state) || 'done',
+    };
+  });
 }
 
 export type OdooProductMembershipPrice = {
