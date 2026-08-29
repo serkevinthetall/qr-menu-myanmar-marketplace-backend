@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { authMiddleware } from '../middleware/auth.js';
 import {
   fetchOdooOnHandProducts,
+  fetchOdooProductCategories,
   fetchOdooStockMoveLines,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
@@ -25,6 +26,21 @@ function parseBool(raw: unknown): boolean {
     .toLowerCase();
   return value === '1' || value === 'true' || value === 'yes';
 }
+
+/** GET /api/inventory/categories — product category names for filters. */
+router.get('/categories', async (req: AuthRequest, res) => {
+  try {
+    const names = await fetchOdooProductCategories(req.user!.id);
+    return res.json({ data: names });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to load product categories.';
+    console.error('[inventory/categories]', message);
+    return res.status(odooStatus(message)).json({ message });
+  }
+});
 
 /** GET /api/inventory/on-hand?q=&category=&hideZero=&limit=&offset= */
 router.get('/on-hand', async (req: AuthRequest, res) => {
@@ -67,6 +83,7 @@ router.get('/on-hand', async (req: AuthRequest, res) => {
         totalOnHand,
         hasMore: rows.length >= limit,
         hideZero,
+        category: category || null,
       },
     });
   } catch (error) {
@@ -79,7 +96,9 @@ router.get('/on-hand', async (req: AuthRequest, res) => {
   }
 });
 
-/** GET /api/inventory/moves?month=YYYY-MM&q=&limit=&offset= */
+/** GET /api/inventory/moves?month=YYYY-MM&q=&category=&limit=&offset=
+ *  q = product name / reference; category = product category (separate).
+ */
 router.get('/moves', async (req: AuthRequest, res) => {
   try {
     const limitRaw = Number(req.query.limit);
@@ -92,12 +111,14 @@ router.get('/moves', async (req: AuthRequest, res) => {
       Number.isFinite(offsetRaw) && offsetRaw >= 0 ? Math.floor(offsetRaw) : 0;
     const month = String(req.query.month ?? '').trim();
     const q = String(req.query.q ?? '').trim();
+    const category = String(req.query.category ?? '').trim();
 
     const rows = await fetchOdooStockMoveLines(req.user!.id, {
       limit,
       offset,
       month: month || undefined,
       q: q || undefined,
+      category: category || undefined,
     });
 
     const totalQuantity = rows.reduce(
@@ -126,6 +147,7 @@ router.get('/moves', async (req: AuthRequest, res) => {
         totalQuantity,
         hasMore: rows.length >= limit,
         month: month || null,
+        category: category || null,
       },
     });
   } catch (error) {

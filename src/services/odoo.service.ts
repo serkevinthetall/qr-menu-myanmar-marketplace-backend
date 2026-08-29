@@ -627,6 +627,43 @@ function parseYearMonthKey(
   };
 }
 
+/** List product category names for inventory filters. */
+export async function fetchOdooProductCategories(
+  userId: string,
+): Promise<string[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  type CatRow = { id: number; name?: string | false; display_name?: string | false };
+  let rows: CatRow[] = [];
+  try {
+    rows = await searchReadOdooRecords<CatRow>(
+      session,
+      'product.category',
+      [],
+      ['id', 'name', 'display_name'],
+      { order: 'name asc', limit: 500 },
+    );
+  } catch {
+    rows = await searchReadOdooRecords<CatRow>(
+      session,
+      'product.category',
+      [],
+      ['id', 'name'],
+      { order: 'name asc', limit: 500 },
+    );
+  }
+
+  const names = rows
+    .map(row => odooString(row.display_name) || odooString(row.name))
+    .filter(Boolean);
+  return [...new Set(names)].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: 'base' }),
+  );
+}
+
 /** Current on-hand quantities for stockable products (accounting stock check). */
 export async function fetchOdooOnHandProducts(
   userId: string,
@@ -656,13 +693,16 @@ export async function fetchOdooOnHandProducts(
   const category = String(options?.category ?? '').trim();
 
   const baseDomain: unknown[] = [['active', '=', true]];
+  // q = product name / SKU only (category is a separate filter).
   if (q) {
     baseDomain.push('|');
     baseDomain.push(['name', 'ilike', q]);
     baseDomain.push(['default_code', 'ilike', q]);
   }
   if (category) {
-    baseDomain.push(['categ_id.name', 'ilike', category]);
+    baseDomain.push('|');
+    baseDomain.push(['categ_id.name', '=', category]);
+    baseDomain.push(['categ_id.complete_name', 'ilike', category]);
   }
 
   const fields = [
@@ -689,10 +729,20 @@ export async function fetchOdooOnHandProducts(
       { order: 'name asc', limit, offset },
     );
   } catch {
+    // Fallback without complete_name / type filters if Studio/Odoo version differs.
+    const fallbackDomain: unknown[] = [['active', '=', true]];
+    if (q) {
+      fallbackDomain.push('|');
+      fallbackDomain.push(['name', 'ilike', q]);
+      fallbackDomain.push(['default_code', 'ilike', q]);
+    }
+    if (category) {
+      fallbackDomain.push(['categ_id.name', 'ilike', category]);
+    }
     rows = await searchReadOdooRecords<OdooOnHandRow>(
       session,
       'product.product',
-      baseDomain,
+      fallbackDomain,
       fields,
       { order: 'name asc', limit, offset },
     );
@@ -711,6 +761,15 @@ export async function fetchOdooOnHandProducts(
     mapped = mapped.filter(row => row.onHand !== 0);
   }
 
+  // Prefer exact category label match when dropdown sent a name.
+  if (category) {
+    const needle = category.toLowerCase();
+    mapped = mapped.filter(row => {
+      const label = (row.category || '').toLowerCase();
+      return label === needle || label.endsWith(`/${needle}`) || label.includes(needle);
+    });
+  }
+
   return mapped;
 }
 
@@ -722,6 +781,7 @@ export async function fetchOdooStockMoveLines(
     offset?: number;
     month?: string;
     q?: string;
+    category?: string;
   },
 ): Promise<OdooStockMoveLine[]> {
   const session = getOdooSession(userId);
@@ -745,13 +805,45 @@ export async function fetchOdooStockMoveLines(
     domain.push(['date', '<=', monthRange.endDt]);
   }
 
+  const category = String(options?.category ?? '').trim();
+  if (category) {
+    type IdRow = { id: number };
+    let productIdsInCategory: number[] = [];
+    try {
+      const products = await searchReadOdooRecords<IdRow>(
+        session,
+        'product.product',
+        [
+          '|',
+          ['categ_id.name', '=', category],
+          ['categ_id.complete_name', 'ilike', category],
+        ],
+        ['id'],
+        { limit: 2000 },
+      );
+      productIdsInCategory = products.map(row => row.id);
+    } catch {
+      const products = await searchReadOdooRecords<IdRow>(
+        session,
+        'product.product',
+        [['categ_id.name', 'ilike', category]],
+        ['id'],
+        { limit: 2000 },
+      );
+      productIdsInCategory = products.map(row => row.id);
+    }
+    if (productIdsInCategory.length === 0) {
+      return [];
+    }
+    domain.push(['product_id', 'in', productIdsInCategory]);
+  }
+
+  // q = product name / reference only (category is a separate filter).
   const q = String(options?.q ?? '').trim();
   if (q) {
     domain.push('|');
-    domain.push('|');
     domain.push(['reference', 'ilike', q]);
     domain.push(['product_id', 'ilike', q]);
-    domain.push(['location_dest_id', 'ilike', q]);
   }
 
   const fieldsWithQty = [
