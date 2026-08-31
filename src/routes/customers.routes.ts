@@ -9,9 +9,11 @@ import {
   fetchOdooContactsForQuotation,
   fetchOdooPartnerAddressOptions,
   fetchOdooPartnerCategoryNames,
+  fetchOdooPartnerPortalStatus,
   fetchOdooPartnerTags,
   fetchOdooTownshipForPartner,
   fetchOdooTownships,
+  grantOdooPartnerPortalAccess,
   resolvePartnerLocation,
   searchOdooContactsByPhone,
 } from '../services/odoo.service.js';
@@ -497,12 +499,19 @@ router.get('/:id', async (req: AuthRequest, res) => {
       return res.status(404).json({ message: 'Contact not found.' });
     }
 
-    const [tagNames, township] = await Promise.all([
+    const [tagNames, township, portal] = await Promise.all([
       fetchOdooPartnerCategoryNames(
         req.user!.id,
         toManyIds(contact.category_id),
       ),
       fetchOdooTownshipForPartner(req.user!.id, contact),
+      fetchOdooPartnerPortalStatus(req.user!.id, contactId).catch(() => ({
+        hasEmail: Boolean(toStringValue(contact.email)),
+        email: toStringValue(contact.email),
+        granted: false,
+        login: '',
+        userId: null as number | null,
+      })),
     ]);
 
     const location = resolvePartnerLocation(contact, township);
@@ -526,6 +535,12 @@ router.get('/:id', async (req: AuthRequest, res) => {
       tags: tagNames.join(', '),
       memberCode: toStringValue(contact.x_studio_member_code),
       appPromoter: toStringValue(contact.x_studio_app_promoter),
+      portalAccess: {
+        hasEmail: portal.hasEmail,
+        email: portal.email,
+        granted: portal.granted,
+        login: portal.login,
+      },
     };
 
     return res.json({ data });
@@ -534,6 +549,52 @@ router.get('/:id', async (req: AuthRequest, res) => {
       error instanceof Error ? error.message : 'Failed to load contact detail.';
     console.error('[customers] Failed to load contact detail:', message);
     return res.status(500).json({ message });
+  }
+});
+
+/** POST /api/customers/:id/portal-access — grant portal user + set password. */
+router.post('/:id/portal-access', async (req: AuthRequest, res) => {
+  const contactId = Number(req.params.id);
+  if (!Number.isFinite(contactId) || contactId <= 0) {
+    return res.status(400).json({ message: 'Invalid contact id.' });
+  }
+
+  const password =
+    typeof req.body?.password === 'string' ? req.body.password : '';
+
+  try {
+    const portal = await grantOdooPartnerPortalAccess(
+      req.user!.id,
+      contactId,
+      password,
+    );
+    return res.json({
+      data: {
+        hasEmail: portal.hasEmail,
+        email: portal.email,
+        granted: portal.granted,
+        login: portal.login,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to grant portal access.';
+    console.error('[customers] portal-access', message);
+    const lower = message.toLowerCase();
+    let status = 502;
+    if (/session expired/i.test(message)) status = 401;
+    else if (/not found/i.test(message)) status = 404;
+    else if (
+      lower.includes('please enter the email') ||
+      lower.includes('already registered') ||
+      lower.includes('password') ||
+      lower.includes('invalid contact')
+    ) {
+      status = 400;
+    }
+    return res.status(status).json({ message });
   }
 });
 

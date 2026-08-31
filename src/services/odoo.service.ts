@@ -3004,6 +3004,248 @@ export async function updateOdooPartnerAppPromoter(
   });
 }
 
+/* ─── Portal access (external / customer portal user) ─── */
+
+export type OdooPartnerPortalStatus = {
+  hasEmail: boolean;
+  email: string;
+  granted: boolean;
+  login: string;
+  userId: number | null;
+};
+
+type OdooPortalUserRow = {
+  id: number;
+  login?: string | false;
+  email?: string | false;
+  partner_id?: [number, string] | false;
+  share?: boolean;
+  active?: boolean;
+};
+
+async function resolveOdooPortalGroupId(session: {
+  cookie: string;
+  uid: number;
+}): Promise<number> {
+  try {
+    type DataRow = { id: number; res_id?: number };
+    const rows = await searchReadOdooRecords<DataRow>(
+      session,
+      'ir.model.data',
+      [
+        ['module', '=', 'base'],
+        ['name', '=', 'group_portal'],
+      ],
+      ['res_id'],
+      { limit: 1 },
+    );
+    const resId = Number(rows[0]?.res_id);
+    if (Number.isFinite(resId) && resId > 0) {
+      return resId;
+    }
+  } catch {
+    // fall through
+  }
+
+  try {
+    type GroupRow = { id: number; name?: string | false };
+    const groups = await searchReadOdooRecords<GroupRow>(
+      session,
+      'res.groups',
+      [['name', 'ilike', 'Portal']],
+      ['id', 'name'],
+      { limit: 20 },
+    );
+    const exact = groups.find(
+      row => String(row.name || '').trim().toLowerCase() === 'portal',
+    );
+    const pick = exact ?? groups[0];
+    if (pick?.id) {
+      return pick.id;
+    }
+  } catch {
+    // fall through
+  }
+
+  throw new Error(
+    'Could not find the Odoo Portal user group. Check Portal is installed.',
+  );
+}
+
+async function findOdooUsersByLoginOrEmail(
+  session: { cookie: string; uid: number },
+  email: string,
+): Promise<OdooPortalUserRow[]> {
+  const login = email.trim().toLowerCase();
+  return searchReadOdooRecords<OdooPortalUserRow>(
+    session,
+    'res.users',
+    ['|', ['login', '=ilike', login], ['email', '=ilike', login]],
+    ['id', 'login', 'email', 'partner_id', 'share', 'active'],
+    { limit: 10 },
+  );
+}
+
+async function findOdooUsersForPartner(
+  session: { cookie: string; uid: number },
+  partnerId: number,
+): Promise<OdooPortalUserRow[]> {
+  return searchReadOdooRecords<OdooPortalUserRow>(
+    session,
+    'res.users',
+    [['partner_id', '=', partnerId]],
+    ['id', 'login', 'email', 'partner_id', 'share', 'active'],
+    { limit: 10 },
+  );
+}
+
+export async function fetchOdooPartnerPortalStatus(
+  userId: string,
+  partnerId: number,
+): Promise<OdooPartnerPortalStatus> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    throw new Error('Invalid contact id.');
+  }
+
+  const partner = await fetchOdooContactById(userId, partnerId);
+  if (!partner) {
+    throw new Error('Contact not found.');
+  }
+
+  const email = odooString(partner.email).trim();
+  const hasEmail = Boolean(email);
+
+  const linked = await findOdooUsersForPartner(session, partnerId);
+  const portalLike =
+    linked.find(row => row.share === true) ||
+    linked.find(row => row.active !== false) ||
+    linked[0];
+
+  return {
+    hasEmail,
+    email,
+    granted: Boolean(portalLike),
+    login: portalLike
+      ? odooString(portalLike.login) || odooString(portalLike.email) || email
+      : '',
+    userId: portalLike?.id ?? null,
+  };
+}
+
+/**
+ * Grant Odoo Portal access for a contact (external account).
+ * Requires email on the contact; password set on the portal user.
+ */
+export async function grantOdooPartnerPortalAccess(
+  userId: string,
+  partnerId: number,
+  password: string,
+): Promise<OdooPartnerPortalStatus> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    throw new Error('Invalid contact id.');
+  }
+
+  const pwd = String(password ?? '');
+
+  const partner = await fetchOdooContactById(userId, partnerId);
+  if (!partner) {
+    throw new Error('Contact not found.');
+  }
+
+  const email = odooString(partner.email).trim();
+  if (!email) {
+    throw new Error('Please enter the email.');
+  }
+
+  const existingByEmail = await findOdooUsersByLoginOrEmail(session, email);
+  const linkedUsers = await findOdooUsersForPartner(session, partnerId);
+
+  for (const row of existingByEmail) {
+    const linkedPartnerId = odooRelationId(row.partner_id);
+    if (linkedPartnerId > 0 && linkedPartnerId !== partnerId) {
+      throw new Error('This email is already registered.');
+    }
+  }
+
+  const ownUser =
+    linkedUsers.find(row => {
+      const login = odooString(row.login).toLowerCase();
+      const userEmail = odooString(row.email).toLowerCase();
+      const needle = email.toLowerCase();
+      return login === needle || userEmail === needle;
+    }) ||
+    existingByEmail.find(row => odooRelationId(row.partner_id) === partnerId) ||
+    linkedUsers[0];
+
+  if (ownUser?.id) {
+    try {
+      await odooCallKw(
+        session.cookie,
+        'res.users',
+        'write',
+        [[ownUser.id], { password: pwd }],
+        { context: { no_reset_password: true } },
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to set portal password.';
+      throw new Error(message);
+    }
+    return fetchOdooPartnerPortalStatus(userId, partnerId);
+  }
+
+  const portalGroupId = await resolveOdooPortalGroupId(session);
+  const name = odooString(partner.name) || email;
+
+  try {
+    await odooCallKw(
+      session.cookie,
+      'res.users',
+      'create',
+      [
+        {
+          name,
+          login: email,
+          email,
+          partner_id: partnerId,
+          password: pwd,
+          groups_id: [[6, 0, [portalGroupId]]],
+        },
+      ],
+      {
+        context: {
+          no_reset_password: true,
+          mail_create_nosubscribe: true,
+          mail_notrack: true,
+        },
+      },
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to grant portal access.';
+    const lower = message.toLowerCase();
+    if (
+      lower.includes('already') ||
+      lower.includes('unique') ||
+      lower.includes('duplicate') ||
+      lower.includes('exists')
+    ) {
+      throw new Error('This email is already registered.');
+    }
+    throw new Error(message);
+  }
+
+  return fetchOdooPartnerPortalStatus(userId, partnerId);
+}
+
 /** Studio model: Contacts → App Promoter (rates). */
 export const ODOO_APP_PROMOTER_MODEL = 'x_app_promoter';
 export const ODOO_APP_PROMOTER_NAME_FIELD = 'x_name';
