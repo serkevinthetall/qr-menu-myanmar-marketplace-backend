@@ -16,7 +16,7 @@ import {
   grantOdooPartnerPortalAccess,
   resolvePartnerLocation,
   searchOdooContactsByPhone,
-  updateOdooPartnerEmail,
+  updateOdooContact,
 } from '../services/odoo.service.js';
 import { splitTagNames, validateMyanmarPhone } from '../utils/myanmar-phone.js';
 import { AuthRequest } from '../types/auth.js';
@@ -55,6 +55,62 @@ function toManyIds(value: unknown): number[] {
     return [];
   }
   return value.filter((item): item is number => typeof item === 'number');
+}
+
+async function buildCustomerDetailResponse(
+  userId: string,
+  contactId: number,
+) {
+  const contact = await fetchOdooContactById(userId, contactId);
+  if (!contact) {
+    return null;
+  }
+
+  const [tagNames, township, portal] = await Promise.all([
+    fetchOdooPartnerCategoryNames(userId, toManyIds(contact.category_id)),
+    fetchOdooTownshipForPartner(userId, contact),
+    fetchOdooPartnerPortalStatus(userId, contactId).catch(() => ({
+      hasEmail: Boolean(toStringValue(contact.email)),
+      email: toStringValue(contact.email),
+      granted: false,
+      login: '',
+      userId: null as number | null,
+    })),
+  ]);
+
+  const location = resolvePartnerLocation(contact, township);
+  const townshipRelationId = toRelationId(
+    contact.x_studio_many2one_field_8u9_1jp4l7r0g,
+  );
+
+  return {
+    id: String(contact.id),
+    name: toStringValue(contact.name),
+    relatedCompany: toRelationName(contact.parent_id),
+    relatedCompanyId: toRelationId(contact.parent_id) || null,
+    email: toStringValue(contact.email),
+    phone: toStringValue(contact.phone),
+    street: toStringValue(contact.street),
+    street2: toStringValue(contact.street2),
+    township: location.township,
+    townshipId: townshipRelationId > 0 ? String(townshipRelationId) : null,
+    city: location.city,
+    state: location.state,
+    stateId: location.stateId,
+    zip: location.zip,
+    country: location.country,
+    countryId: location.countryId,
+    tags: tagNames.join(', '),
+    tagIds: toManyIds(contact.category_id).map(String),
+    memberCode: toStringValue(contact.x_studio_member_code),
+    appPromoter: toStringValue(contact.x_studio_app_promoter),
+    portalAccess: {
+      hasEmail: portal.hasEmail,
+      email: portal.email,
+      granted: portal.granted,
+      login: portal.login,
+    },
+  };
 }
 
 router.use(authMiddleware);
@@ -494,55 +550,11 @@ router.get('/:id', async (req: AuthRequest, res) => {
   }
 
   try {
-    const contact = await fetchOdooContactById(req.user!.id, contactId);
+    const data = await buildCustomerDetailResponse(req.user!.id, contactId);
 
-    if (!contact) {
+    if (!data) {
       return res.status(404).json({ message: 'Contact not found.' });
     }
-
-    const [tagNames, township, portal] = await Promise.all([
-      fetchOdooPartnerCategoryNames(
-        req.user!.id,
-        toManyIds(contact.category_id),
-      ),
-      fetchOdooTownshipForPartner(req.user!.id, contact),
-      fetchOdooPartnerPortalStatus(req.user!.id, contactId).catch(() => ({
-        hasEmail: Boolean(toStringValue(contact.email)),
-        email: toStringValue(contact.email),
-        granted: false,
-        login: '',
-        userId: null as number | null,
-      })),
-    ]);
-
-    const location = resolvePartnerLocation(contact, township);
-
-    const data = {
-      id: String(contact.id),
-      name: toStringValue(contact.name),
-      relatedCompany: toRelationName(contact.parent_id),
-      relatedCompanyId: toRelationId(contact.parent_id) || null,
-      email: toStringValue(contact.email),
-      phone: toStringValue(contact.phone),
-      street: toStringValue(contact.street),
-      street2: toStringValue(contact.street2),
-      township: location.township,
-      city: location.city,
-      state: location.state,
-      stateId: location.stateId,
-      zip: location.zip,
-      country: location.country,
-      countryId: location.countryId,
-      tags: tagNames.join(', '),
-      memberCode: toStringValue(contact.x_studio_member_code),
-      appPromoter: toStringValue(contact.x_studio_app_promoter),
-      portalAccess: {
-        hasEmail: portal.hasEmail,
-        email: portal.email,
-        granted: portal.granted,
-        login: portal.login,
-      },
-    };
 
     return res.json({ data });
   } catch (error) {
@@ -553,48 +565,62 @@ router.get('/:id', async (req: AuthRequest, res) => {
   }
 });
 
-/** PATCH /api/customers/:id — update contact fields (email). */
+/** PATCH /api/customers/:id — update contact fields. */
 router.patch('/:id', async (req: AuthRequest, res) => {
   const contactId = Number(req.params.id);
   if (!Number.isFinite(contactId) || contactId <= 0) {
     return res.status(400).json({ message: 'Invalid contact id.' });
   }
 
-  const email = toStringValue(req.body?.email).trim();
-  if (!email) {
-    return res.status(400).json({ message: 'Please enter the email.' });
+  const name = toStringValue(req.body?.name).trim();
+  const phoneRaw = toStringValue(req.body?.phone).trim();
+  const townshipId = Number(req.body?.townshipId);
+
+  if (!name) {
+    return res.status(400).json({ message: 'Name is required.' });
   }
 
-  try {
-    await updateOdooPartnerEmail(req.user!.id, contactId, email);
+  if (!phoneRaw) {
+    return res.status(400).json({ message: 'Phone number is required.' });
+  }
 
-    const contact = await fetchOdooContactById(req.user!.id, contactId);
-    if (!contact) {
+  if (!Number.isFinite(townshipId) || townshipId <= 0) {
+    return res.status(400).json({ message: 'Township is required.' });
+  }
+
+  let phone = phoneRaw;
+  try {
+    phone = validateMyanmarPhone(phoneRaw, 'Phone number');
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Invalid phone number.';
+    return res.status(400).json({ message });
+  }
+
+  const tagIdsRaw = req.body?.tagIds;
+  const tagIds = Array.isArray(tagIdsRaw)
+    ? tagIdsRaw
+        .map(id => Number(id))
+        .filter(id => Number.isFinite(id) && id > 0)
+    : [];
+
+  try {
+    await updateOdooContact(req.user!.id, contactId, {
+      name,
+      email: toStringValue(req.body?.email).trim() || undefined,
+      phone,
+      street: toStringValue(req.body?.street).trim() || undefined,
+      street2: toStringValue(req.body?.street2).trim() || undefined,
+      townshipId,
+      tagIds,
+    });
+
+    const data = await buildCustomerDetailResponse(req.user!.id, contactId);
+    if (!data) {
       return res.status(404).json({ message: 'Contact not found.' });
     }
 
-    const portal = await fetchOdooPartnerPortalStatus(
-      req.user!.id,
-      contactId,
-    ).catch(() => ({
-      hasEmail: true,
-      email,
-      granted: false,
-      login: '',
-      userId: null as number | null,
-    }));
-
-    return res.json({
-      data: {
-        email: toStringValue(contact.email) || email,
-        portalAccess: {
-          hasEmail: portal.hasEmail,
-          email: portal.email || email,
-          granted: portal.granted,
-          login: portal.login,
-        },
-      },
-    });
+    return res.json({ data });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to update contact.';
@@ -604,9 +630,10 @@ router.patch('/:id', async (req: AuthRequest, res) => {
     if (/session expired/i.test(message)) status = 401;
     else if (/not found/i.test(message)) status = 404;
     else if (
-      lower.includes('please enter') ||
+      lower.includes('required') ||
       lower.includes('valid email') ||
-      lower.includes('already registered')
+      lower.includes('already') ||
+      lower.includes('phone')
     ) {
       status = 400;
     }

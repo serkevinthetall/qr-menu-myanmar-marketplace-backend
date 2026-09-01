@@ -2589,6 +2589,113 @@ export async function createOdooContact(
   };
 }
 
+export type UpdateContactInput = {
+  name: string;
+  email?: string;
+  phone: string;
+  street?: string;
+  street2?: string;
+  townshipId: number;
+  tagIds?: number[];
+};
+
+async function assertOdooPartnerEmailAvailable(
+  session: { cookie: string; uid: number },
+  partnerId: number,
+  email: string,
+): Promise<void> {
+  const trimmed = String(email ?? '').trim();
+  if (!trimmed) {
+    return;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    throw new Error('Please enter a valid email.');
+  }
+
+  type UserRow = {
+    id: number;
+    partner_id?: [number, string] | false;
+  };
+  const users = await searchReadOdooRecords<UserRow>(
+    session,
+    'res.users',
+    ['|', ['login', '=ilike', trimmed], ['email', '=ilike', trimmed]],
+    ['id', 'partner_id'],
+    { limit: 10 },
+  );
+  for (const row of users) {
+    const linkedPartnerId = odooRelationId(row.partner_id);
+    if (linkedPartnerId > 0 && linkedPartnerId !== partnerId) {
+      throw new Error('This email is already registered.');
+    }
+  }
+}
+
+export async function updateOdooContact(
+  userId: string,
+  partnerId: number,
+  input: UpdateContactInput,
+): Promise<void> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    throw new Error('Invalid contact id.');
+  }
+
+  const partner = await fetchOdooContactById(userId, partnerId);
+  if (!partner) {
+    throw new Error('Contact not found.');
+  }
+
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error('Name is required.');
+  }
+
+  const phone = input.phone.trim();
+  if (!phone) {
+    throw new Error('Phone number is required.');
+  }
+
+  const existingByPhone = await searchOdooContactsByPhone(userId, phone);
+  const duplicatePhone = existingByPhone.some(row => row.id !== partnerId);
+  if (duplicatePhone) {
+    throw new Error(
+      'A contact with this phone number already exists. Use a different phone number.',
+    );
+  }
+
+  if (
+    !Number.isFinite(input.townshipId) ||
+    input.townshipId <= 0
+  ) {
+    throw new Error('Township is required.');
+  }
+
+  const email = input.email?.trim() ?? '';
+  if (email) {
+    await assertOdooPartnerEmailAvailable(session, partnerId, email);
+  }
+
+  const tagIds = await resolveOdooPartnerTagIds(userId, {
+    tagIds: input.tagIds,
+  });
+
+  const values: Record<string, unknown> = {
+    name,
+    phone,
+    street: input.street?.trim() || false,
+    street2: input.street2?.trim() || false,
+    email: email || false,
+    [PARTNER_TOWNSHIP_FIELD]: input.townshipId,
+    category_id: [[6, 0, tagIds]],
+  };
+
+  await writeOdooRecordAsUser(session, 'res.partner', partnerId, values);
+}
+
 export type PartnerAddressOption = {
   id: number;
   name: string;
@@ -3022,36 +3129,13 @@ export async function updateOdooPartnerEmail(
   if (!trimmed) {
     throw new Error('Please enter the email.');
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
-    throw new Error('Please enter a valid email.');
-  }
 
   const partner = await fetchOdooContactById(userId, partnerId);
   if (!partner) {
     throw new Error('Contact not found.');
   }
 
-  type UserRow = {
-    id: number;
-    partner_id?: [number, string] | false;
-  };
-  const users = await searchReadOdooRecords<UserRow>(
-    session,
-    'res.users',
-    [
-      '|',
-      ['login', '=ilike', trimmed],
-      ['email', '=ilike', trimmed],
-    ],
-    ['id', 'partner_id'],
-    { limit: 10 },
-  );
-  for (const row of users) {
-    const linkedPartnerId = odooRelationId(row.partner_id);
-    if (linkedPartnerId > 0 && linkedPartnerId !== partnerId) {
-      throw new Error('This email is already registered.');
-    }
-  }
+  await assertOdooPartnerEmailAvailable(session, partnerId, trimmed);
 
   await writeOdooRecordAsUser(session, 'res.partner', partnerId, {
     email: trimmed,
