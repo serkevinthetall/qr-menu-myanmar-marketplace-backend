@@ -16,6 +16,7 @@ import {
   grantOdooPartnerPortalAccess,
   resolvePartnerLocation,
   searchOdooContactsByPhone,
+  updateOdooPartnerEmail,
 } from '../services/odoo.service.js';
 import { splitTagNames, validateMyanmarPhone } from '../utils/myanmar-phone.js';
 import { AuthRequest } from '../types/auth.js';
@@ -549,6 +550,67 @@ router.get('/:id', async (req: AuthRequest, res) => {
       error instanceof Error ? error.message : 'Failed to load contact detail.';
     console.error('[customers] Failed to load contact detail:', message);
     return res.status(500).json({ message });
+  }
+});
+
+/** PATCH /api/customers/:id — update contact fields (email). */
+router.patch('/:id', async (req: AuthRequest, res) => {
+  const contactId = Number(req.params.id);
+  if (!Number.isFinite(contactId) || contactId <= 0) {
+    return res.status(400).json({ message: 'Invalid contact id.' });
+  }
+
+  const email = toStringValue(req.body?.email).trim();
+  if (!email) {
+    return res.status(400).json({ message: 'Please enter the email.' });
+  }
+
+  try {
+    await updateOdooPartnerEmail(req.user!.id, contactId, email);
+
+    const contact = await fetchOdooContactById(req.user!.id, contactId);
+    if (!contact) {
+      return res.status(404).json({ message: 'Contact not found.' });
+    }
+
+    const portal = await fetchOdooPartnerPortalStatus(
+      req.user!.id,
+      contactId,
+    ).catch(() => ({
+      hasEmail: true,
+      email,
+      granted: false,
+      login: '',
+      userId: null as number | null,
+    }));
+
+    return res.json({
+      data: {
+        email: toStringValue(contact.email) || email,
+        portalAccess: {
+          hasEmail: portal.hasEmail,
+          email: portal.email || email,
+          granted: portal.granted,
+          login: portal.login,
+        },
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to update contact.';
+    console.error('[customers] patch contact', message);
+    const lower = message.toLowerCase();
+    let status = 502;
+    if (/session expired/i.test(message)) status = 401;
+    else if (/not found/i.test(message)) status = 404;
+    else if (
+      lower.includes('please enter') ||
+      lower.includes('valid email') ||
+      lower.includes('already registered')
+    ) {
+      status = 400;
+    }
+    return res.status(status).json({ message });
   }
 });
 

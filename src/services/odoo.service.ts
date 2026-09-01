@@ -3004,6 +3004,60 @@ export async function updateOdooPartnerAppPromoter(
   });
 }
 
+/** Write email on res.partner (required before portal grant). */
+export async function updateOdooPartnerEmail(
+  userId: string,
+  partnerId: number,
+  email: string,
+): Promise<void> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    throw new Error('Invalid contact id.');
+  }
+
+  const trimmed = String(email ?? '').trim();
+  if (!trimmed) {
+    throw new Error('Please enter the email.');
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    throw new Error('Please enter a valid email.');
+  }
+
+  const partner = await fetchOdooContactById(userId, partnerId);
+  if (!partner) {
+    throw new Error('Contact not found.');
+  }
+
+  type UserRow = {
+    id: number;
+    partner_id?: [number, string] | false;
+  };
+  const users = await searchReadOdooRecords<UserRow>(
+    session,
+    'res.users',
+    [
+      '|',
+      ['login', '=ilike', trimmed],
+      ['email', '=ilike', trimmed],
+    ],
+    ['id', 'partner_id'],
+    { limit: 10 },
+  );
+  for (const row of users) {
+    const linkedPartnerId = odooRelationId(row.partner_id);
+    if (linkedPartnerId > 0 && linkedPartnerId !== partnerId) {
+      throw new Error('This email is already registered.');
+    }
+  }
+
+  await writeOdooRecordAsUser(session, 'res.partner', partnerId, {
+    email: trimmed,
+  });
+}
+
 /* ─── Portal access (external / customer portal user) ─── */
 
 export type OdooPartnerPortalStatus = {
