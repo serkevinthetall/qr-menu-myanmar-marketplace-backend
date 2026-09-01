@@ -3072,6 +3072,207 @@ async function resolveOdooPortalGroupId(session: {
   );
 }
 
+async function setOdooUserPassword(
+  session: { cookie: string; uid: number },
+  userId: number,
+  password: string,
+): Promise<void> {
+  if (!password) {
+    return;
+  }
+  await odooCallKw(
+    session.cookie,
+    'res.users',
+    'write',
+    [[userId], { password }],
+    { context: { no_reset_password: true } },
+  );
+}
+
+/**
+ * Odoo Online rejects writing `groups_id` on res.users via API.
+ * Prefer portal.wizard.action_grant_access / _create_user_from_template.
+ */
+async function createOdooPortalUser(
+  session: { cookie: string; uid: number },
+  partnerId: number,
+  email: string,
+  name: string,
+  password: string,
+): Promise<void> {
+  const createContext = {
+    no_reset_password: true,
+    mail_create_nosubscribe: true,
+    mail_notrack: true,
+  };
+
+  // 1) Official Portal wizard (assigns portal group without groups_id write)
+  try {
+    const wizardId = await odooCallKw<number>(
+      session.cookie,
+      'portal.wizard',
+      'create',
+      [{ partner_ids: [[6, 0, [partnerId]]] }],
+      { context: createContext },
+    );
+
+    type WizardUserRow = {
+      id: number;
+      email?: string | false;
+      partner_id?: [number, string] | false;
+    };
+    let lines = await searchReadOdooRecords<WizardUserRow>(
+      session,
+      'portal.wizard.user',
+      [['wizard_id', '=', wizardId]],
+      ['id', 'email', 'partner_id'],
+      { limit: 20 },
+    );
+
+    if (lines.length === 0) {
+      // Some Odoo versions only fill lines after writing partner_ids
+      await odooCallKw(
+        session.cookie,
+        'portal.wizard',
+        'write',
+        [[wizardId], { partner_ids: [[6, 0, [partnerId]]] }],
+        { context: createContext },
+      );
+      lines = await searchReadOdooRecords<WizardUserRow>(
+        session,
+        'portal.wizard.user',
+        [['wizard_id', '=', wizardId]],
+        ['id', 'email', 'partner_id'],
+        { limit: 20 },
+      );
+    }
+
+    const target =
+      lines.find(row => odooRelationId(row.partner_id) === partnerId) ||
+      lines[0];
+
+    if (target?.id) {
+      const lineEmail = odooString(target.email).trim();
+      if (!lineEmail || lineEmail.toLowerCase() !== email.toLowerCase()) {
+        await odooCallKw(
+          session.cookie,
+          'portal.wizard.user',
+          'write',
+          [[target.id], { email }],
+          { context: createContext },
+        );
+      }
+
+      try {
+        await odooCallKw(
+          session.cookie,
+          'portal.wizard.user',
+          'action_grant_access',
+          [[target.id]],
+          { context: createContext },
+        );
+      } catch {
+        // Older / alternate method name
+        await odooCallKw(
+          session.cookie,
+          'portal.wizard',
+          'action_apply',
+          [[wizardId]],
+          { context: createContext },
+        );
+      }
+
+      const linked = await findOdooUsersForPartner(session, partnerId);
+      const created =
+        linked.find(row => {
+          const login = odooString(row.login).toLowerCase();
+          const userEmail = odooString(row.email).toLowerCase();
+          const needle = email.toLowerCase();
+          return login === needle || userEmail === needle;
+        }) || linked[0];
+      if (created?.id) {
+        await setOdooUserPassword(session, created.id, password);
+        return;
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const lower = message.toLowerCase();
+    if (
+      lower.includes('already') ||
+      lower.includes('unique') ||
+      lower.includes('duplicate') ||
+      lower.includes('exists')
+    ) {
+      throw new Error('This email is already registered.');
+    }
+    // fall through to template create
+  }
+
+  // 2) Same path Portal uses internally (copies portal template groups)
+  try {
+    await odooCallKw(
+      session.cookie,
+      'res.users',
+      '_create_user_from_template',
+      [
+        {
+          name,
+          login: email,
+          email,
+          partner_id: partnerId,
+          password,
+        },
+      ],
+      { context: createContext },
+    );
+    return;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const lower = message.toLowerCase();
+    if (
+      lower.includes('already') ||
+      lower.includes('unique') ||
+      lower.includes('duplicate') ||
+      lower.includes('exists')
+    ) {
+      throw new Error('This email is already registered.');
+    }
+    // fall through
+  }
+
+  // 3) Last resort: create without groups_id, then try to link portal group
+  const userId = await odooCallKw<number>(
+    session.cookie,
+    'res.users',
+    'create',
+    [
+      {
+        name,
+        login: email,
+        email,
+        partner_id: partnerId,
+        password,
+      },
+    ],
+    { context: createContext },
+  );
+
+  try {
+    const portalGroupId = await resolveOdooPortalGroupId(session);
+    await odooCallKw(
+      session.cookie,
+      'res.users',
+      'write',
+      [[userId], { groups_id: [[4, portalGroupId]] }],
+      { context: createContext },
+    );
+  } catch {
+    // Odoo Online may still block groups_id; user may be internal until fixed in Odoo.
+    // Prefer not failing the grant if the login exists — password is already set.
+  }
+}
+
 async function findOdooUsersByLoginOrEmail(
   session: { cookie: string; uid: number },
   email: string,
@@ -3187,13 +3388,7 @@ export async function grantOdooPartnerPortalAccess(
 
   if (ownUser?.id) {
     try {
-      await odooCallKw(
-        session.cookie,
-        'res.users',
-        'write',
-        [[ownUser.id], { password: pwd }],
-        { context: { no_reset_password: true } },
-      );
+      await setOdooUserPassword(session, ownUser.id, pwd);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to set portal password.';
@@ -3202,32 +3397,10 @@ export async function grantOdooPartnerPortalAccess(
     return fetchOdooPartnerPortalStatus(userId, partnerId);
   }
 
-  const portalGroupId = await resolveOdooPortalGroupId(session);
   const name = odooString(partner.name) || email;
 
   try {
-    await odooCallKw(
-      session.cookie,
-      'res.users',
-      'create',
-      [
-        {
-          name,
-          login: email,
-          email,
-          partner_id: partnerId,
-          password: pwd,
-          groups_id: [[6, 0, [portalGroupId]]],
-        },
-      ],
-      {
-        context: {
-          no_reset_password: true,
-          mail_create_nosubscribe: true,
-          mail_notrack: true,
-        },
-      },
-    );
+    await createOdooPortalUser(session, partnerId, email, name, pwd);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to grant portal access.';
