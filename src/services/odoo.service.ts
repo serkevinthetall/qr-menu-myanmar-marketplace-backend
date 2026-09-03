@@ -795,8 +795,8 @@ export async function updateOdooProductAppAccess(
     websitePublished?: boolean;
     tagIds?: number[];
     /**
-     * Contact tag ids (`res.partner.category`). Matching product.tag names
-     * (already created in Odoo) are added/removed on the product.
+     * Contact tag ids (`res.partner.category`). For each selected name, find or
+     * create a product.tag with that name and attach it to the product.
      */
     forYouTagIds?: number[];
     /** true = add QR App + publish; false = remove QR App + unpublish */
@@ -860,7 +860,10 @@ export async function updateOdooProductAppAccess(
 
     const syncedProductTagIds: number[] = [];
     for (const name of selectedNames) {
-      syncedProductTagIds.push(await findOdooProductTagIdByName(session, name));
+      // Contact tag name → product.tag (create if missing), then attach to product.
+      syncedProductTagIds.push(
+        await ensureOdooProductTagIdByName(session, name),
+      );
     }
 
     const current = await readOdooRecordAsUser<{
