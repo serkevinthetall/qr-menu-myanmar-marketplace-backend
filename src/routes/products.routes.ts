@@ -303,7 +303,8 @@ router.put('/:id/app', async (req: AuthRequest, res) => {
   }
 
   const body = req.body ?? {};
-  const enableQrApp = Boolean(body.enableQrApp);
+  const enableQrApp =
+    typeof body.enableQrApp === 'boolean' ? body.enableQrApp : undefined;
   const websitePublished =
     typeof body.websitePublished === 'boolean'
       ? body.websitePublished
@@ -315,7 +316,7 @@ router.put('/:id/app', async (req: AuthRequest, res) => {
     : undefined;
 
   if (
-    !enableQrApp &&
+    enableQrApp === undefined &&
     websitePublished === undefined &&
     tagIds === undefined
   ) {
@@ -324,7 +325,7 @@ router.put('/:id/app', async (req: AuthRequest, res) => {
 
   try {
     const app = await updateOdooProductAppAccess(req.user!.id, productId, {
-      enableQrApp: enableQrApp || undefined,
+      enableQrApp,
       websitePublished,
       tagIds,
     });

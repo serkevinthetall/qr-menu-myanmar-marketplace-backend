@@ -742,6 +742,7 @@ export async function updateOdooProductAppAccess(
   input: {
     websitePublished?: boolean;
     tagIds?: number[];
+    /** true = add QR App + publish; false = remove QR App + unpublish */
     enableQrApp?: boolean;
   },
 ): Promise<OdooProductAppAccess> {
@@ -756,7 +757,7 @@ export async function updateOdooProductAppAccess(
   const tmplId = await resolveProductTemplateId(session, productId);
   const values: Record<string, unknown> = {};
 
-  if (input.enableQrApp) {
+  if (typeof input.enableQrApp === 'boolean') {
     const qrAppTagId = await ensureOdooQrAppTagId(session);
     const current = await readOdooRecordAsUser<{
       product_tag_ids?: number[] | false;
@@ -764,13 +765,20 @@ export async function updateOdooProductAppAccess(
     const currentIds = Array.isArray(current?.product_tag_ids)
       ? current.product_tag_ids.filter(id => Number.isFinite(id) && id > 0)
       : [];
-    const nextIds = currentIds.includes(qrAppTagId)
-      ? currentIds
-      : [...currentIds, qrAppTagId];
 
-    values.website_published = true;
-    values.sale_ok = true;
-    values.product_tag_ids = [[6, 0, nextIds]];
+    if (input.enableQrApp) {
+      const nextIds = currentIds.includes(qrAppTagId)
+        ? currentIds
+        : [...currentIds, qrAppTagId];
+      values.website_published = true;
+      values.sale_ok = true;
+      values.product_tag_ids = [[6, 0, nextIds]];
+    } else {
+      values.website_published = false;
+      values.product_tag_ids = [
+        [6, 0, currentIds.filter(id => id !== qrAppTagId)],
+      ];
+    }
   } else {
     if (typeof input.websitePublished === 'boolean') {
       values.website_published = input.websitePublished;
