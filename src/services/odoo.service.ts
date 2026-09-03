@@ -570,6 +570,8 @@ export type OdooProductAppAccess = {
   tagIds: number[];
   tags: OdooProductTag[];
   ecommerceCategories: { id: number; name: string }[];
+  /** Contact tags (`res.partner.category`) currently linked via matching product.tag names. */
+  forYouTags: { id: number; name: string }[];
   readyForApp: boolean;
 };
 
@@ -613,22 +615,28 @@ export async function fetchOdooProductTags(
     .filter(row => row.id > 0 && row.name);
 }
 
-async function ensureOdooQrAppTagId(session: {
-  cookie: string;
-  uid: number;
-}): Promise<number> {
+/** Find an existing product.tag by name — does not create. */
+async function findOdooProductTagIdByName(
+  session: { cookie: string; uid: number },
+  name: string,
+): Promise<number> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error('Tag name is required.');
+  }
+
   const existing = await searchReadOdooRecords<{ id: number; name: string | false }>(
     session,
     'product.tag',
-    [['name', '=ilike', QR_APP_TAG_NAME]],
+    [['name', '=ilike', trimmed]],
     ['id', 'name'],
-    { limit: 5 },
+    { limit: 10 },
   );
   const exact = existing.find(
     row =>
       String(row.name || '')
         .trim()
-        .toLowerCase() === QR_APP_TAG_NAME.toLowerCase(),
+        .toLowerCase() === trimmed.toLowerCase(),
   );
   if (exact?.id) {
     return exact.id;
@@ -637,7 +645,34 @@ async function ensureOdooQrAppTagId(session: {
     return existing[0].id;
   }
 
-  return createOdooRecord(session, 'product.tag', { name: QR_APP_TAG_NAME });
+  throw new Error(
+    `Product tag "${trimmed}" was not found in Odoo. Create it under Product Tags first (same name as the contact tag).`,
+  );
+}
+
+async function ensureOdooProductTagIdByName(
+  session: { cookie: string; uid: number },
+  name: string,
+): Promise<number> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error('Tag name is required.');
+  }
+  try {
+    return await findOdooProductTagIdByName(session, trimmed);
+  } catch (error) {
+    if (error instanceof Error && /was not found/i.test(error.message)) {
+      return createOdooRecord(session, 'product.tag', { name: trimmed });
+    }
+    throw error;
+  }
+}
+
+async function ensureOdooQrAppTagId(session: {
+  cookie: string;
+  uid: number;
+}): Promise<number> {
+  return ensureOdooProductTagIdByName(session, QR_APP_TAG_NAME);
 }
 
 export async function fetchOdooProductAppAccess(
@@ -684,7 +719,7 @@ export async function fetchOdooProductAppAccess(
     ? template.public_categ_ids.filter(id => Number.isFinite(id) && id > 0)
     : [];
 
-  const [tagRows, categRows] = await Promise.all([
+  const [tagRows, categRows, partnerTags] = await Promise.all([
     tagIds.length
       ? readOdooRecords<{ id: number; name: string | false }>(
           session,
@@ -701,6 +736,7 @@ export async function fetchOdooProductAppAccess(
           ['id', 'name'],
         )
       : Promise.resolve([]),
+    fetchOdooPartnerTags(userId),
   ]);
 
   const tags = tagRows
@@ -715,6 +751,21 @@ export async function fetchOdooProductAppAccess(
       name: typeof row.name === 'string' ? row.name.trim() : '',
     }))
     .filter(row => row.id > 0 && row.name);
+
+  const productTagNames = new Set(
+    tags.map(tag => tag.name.toLowerCase()),
+  );
+  const forYouTags = partnerTags
+    .map(tag => ({
+      id: tag.id,
+      name: typeof tag.name === 'string' ? tag.name.trim() : '',
+    }))
+    .filter(
+      tag =>
+        tag.id > 0 &&
+        tag.name &&
+        productTagNames.has(tag.name.toLowerCase()),
+    );
 
   const saleOk = Boolean(template.sale_ok);
   const websitePublished = Boolean(template.website_published);
@@ -732,6 +783,7 @@ export async function fetchOdooProductAppAccess(
     tagIds,
     tags,
     ecommerceCategories,
+    forYouTags,
     readyForApp: saleOk && websitePublished && hasQrAppTag && hasEcommerceCategory,
   };
 }
@@ -742,6 +794,11 @@ export async function updateOdooProductAppAccess(
   input: {
     websitePublished?: boolean;
     tagIds?: number[];
+    /**
+     * Contact tag ids (`res.partner.category`). Matching product.tag names
+     * (already created in Odoo) are added/removed on the product.
+     */
+    forYouTagIds?: number[];
     /** true = add QR App + publish; false = remove QR App + unpublish */
     enableQrApp?: boolean;
   },
@@ -779,6 +836,66 @@ export async function updateOdooProductAppAccess(
         [6, 0, currentIds.filter(id => id !== qrAppTagId)],
       ];
     }
+  } else if (Array.isArray(input.forYouTagIds)) {
+    const selectedPartnerIds = input.forYouTagIds.filter(
+      id => Number.isFinite(id) && id > 0,
+    );
+    const partnerTags = await fetchOdooPartnerTags(userId);
+    const partnerById = new Map(
+      partnerTags.map(tag => [
+        tag.id,
+        typeof tag.name === 'string' ? tag.name.trim() : '',
+      ]),
+    );
+    const managedNames = new Set(
+      partnerTags
+        .map(tag => (typeof tag.name === 'string' ? tag.name.trim() : ''))
+        .filter(Boolean)
+        .map(name => name.toLowerCase()),
+    );
+
+    const selectedNames = selectedPartnerIds
+      .map(id => partnerById.get(id) || '')
+      .filter(Boolean);
+
+    const syncedProductTagIds: number[] = [];
+    for (const name of selectedNames) {
+      syncedProductTagIds.push(await findOdooProductTagIdByName(session, name));
+    }
+
+    const current = await readOdooRecordAsUser<{
+      product_tag_ids?: number[] | false;
+    }>(session, 'product.template', tmplId, ['product_tag_ids']);
+    const currentTagIds = Array.isArray(current?.product_tag_ids)
+      ? current.product_tag_ids.filter(id => Number.isFinite(id) && id > 0)
+      : [];
+
+    const tagRows = currentTagIds.length
+      ? await readOdooRecords<{ id: number; name: string | false }>(
+          session,
+          'product.tag',
+          currentTagIds,
+          ['id', 'name'],
+        )
+      : [];
+
+    // Keep tags that are not "For you" contact-tag mirrors (e.g. QR App).
+    const keptIds = tagRows
+      .filter(row => {
+        const name = String(row.name || '')
+          .trim()
+          .toLowerCase();
+        if (!name) return false;
+        if (name === QR_APP_TAG_NAME.toLowerCase()) return true;
+        return !managedNames.has(name);
+      })
+      .map(row => row.id);
+
+    const nextTagIds = [...keptIds];
+    for (const id of syncedProductTagIds) {
+      if (!nextTagIds.includes(id)) nextTagIds.push(id);
+    }
+    values.product_tag_ids = [[6, 0, nextTagIds]];
   } else {
     if (typeof input.websitePublished === 'boolean') {
       values.website_published = input.websitePublished;

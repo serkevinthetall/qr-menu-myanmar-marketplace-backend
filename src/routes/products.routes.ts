@@ -103,6 +103,10 @@ function mapAppAccess(app: Awaited<ReturnType<typeof fetchOdooProductAppAccess>>
       id: String(cat.id),
       name: cat.name,
     })),
+    forYouTags: app.forYouTags.map(tag => ({
+      id: String(tag.id),
+      name: tag.name,
+    })),
   };
 }
 
@@ -314,11 +318,18 @@ router.put('/:id/app', async (req: AuthRequest, res) => {
         .map((id: unknown) => Number(id))
         .filter((id: number) => Number.isFinite(id) && id > 0)
     : undefined;
+  const hasForYouUpdate = Array.isArray(body.forYouTagIds);
+  const forYouTagIds = hasForYouUpdate
+    ? body.forYouTagIds
+        .map((id: unknown) => Number(id))
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+    : undefined;
 
   if (
     enableQrApp === undefined &&
     websitePublished === undefined &&
-    tagIds === undefined
+    tagIds === undefined &&
+    !hasForYouUpdate
   ) {
     return res.status(400).json({ message: 'No app settings to update.' });
   }
@@ -328,6 +339,7 @@ router.put('/:id/app', async (req: AuthRequest, res) => {
       enableQrApp,
       websitePublished,
       tagIds,
+      forYouTagIds,
     });
     return res.json({ data: mapAppAccess(app) });
   } catch (error) {
