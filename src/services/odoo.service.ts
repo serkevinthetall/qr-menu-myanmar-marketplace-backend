@@ -577,6 +577,9 @@ export type OdooProductAppAccess = {
 
 const QR_APP_TAG_NAME = 'QR App';
 
+/** Avoid re-searching product.tag "QR App" on every Visible-to-app toggle. */
+let cachedQrAppTagId: number | null = null;
+
 async function resolveProductTemplateId(
   session: { cookie: string; uid: number },
   productId: number,
@@ -672,12 +675,58 @@ async function ensureOdooQrAppTagId(session: {
   cookie: string;
   uid: number;
 }): Promise<number> {
-  return ensureOdooProductTagIdByName(session, QR_APP_TAG_NAME);
+  if (cachedQrAppTagId && cachedQrAppTagId > 0) {
+    return cachedQrAppTagId;
+  }
+  const id = await ensureOdooProductTagIdByName(session, QR_APP_TAG_NAME);
+  cachedQrAppTagId = id;
+  return id;
+}
+
+/** Match product tag names to contact tags without loading the full contact-tag list. */
+async function fetchForYouTagsMatchingProductTags(
+  session: { cookie: string; uid: number },
+  productTags: OdooProductTag[],
+): Promise<{ id: number; name: string }[]> {
+  const names = [
+    ...new Set(
+      productTags
+        .map(tag => tag.name.trim())
+        .filter(
+          name =>
+            Boolean(name) &&
+            name.toLowerCase() !== QR_APP_TAG_NAME.toLowerCase(),
+        ),
+    ),
+  ];
+  if (names.length === 0) {
+    return [];
+  }
+
+  const rows = await searchReadOdooRecords<{ id: number; name: string | false }>(
+    session,
+    'res.partner.category',
+    [['name', 'in', names]],
+    ['id', 'name'],
+    { limit: Math.max(50, names.length * 2) },
+  );
+
+  const wanted = new Set(names.map(name => name.toLowerCase()));
+  return rows
+    .map(row => ({
+      id: row.id,
+      name: typeof row.name === 'string' ? row.name.trim() : '',
+    }))
+    .filter(
+      row =>
+        row.id > 0 && row.name && wanted.has(row.name.toLowerCase()),
+    );
 }
 
 export async function fetchOdooProductAppAccess(
   userId: string,
   productId: number,
+  options?: { templateId?: number },
 ): Promise<OdooProductAppAccess> {
   const session = getOdooSession(userId);
   if (!session) {
@@ -687,7 +736,10 @@ export async function fetchOdooProductAppAccess(
     throw new Error('Invalid product id.');
   }
 
-  const tmplId = await resolveProductTemplateId(session, productId);
+  const tmplId =
+    options?.templateId && options.templateId > 0
+      ? options.templateId
+      : await resolveProductTemplateId(session, productId);
   type TemplateRow = {
     id: number;
     sale_ok?: boolean;
@@ -719,7 +771,7 @@ export async function fetchOdooProductAppAccess(
     ? template.public_categ_ids.filter(id => Number.isFinite(id) && id > 0)
     : [];
 
-  const [tagRows, categRows, partnerTags] = await Promise.all([
+  const [tagRows, categRows] = await Promise.all([
     tagIds.length
       ? readOdooRecords<{ id: number; name: string | false }>(
           session,
@@ -736,7 +788,6 @@ export async function fetchOdooProductAppAccess(
           ['id', 'name'],
         )
       : Promise.resolve([]),
-    fetchOdooPartnerTags(userId),
   ]);
 
   const tags = tagRows
@@ -752,20 +803,7 @@ export async function fetchOdooProductAppAccess(
     }))
     .filter(row => row.id > 0 && row.name);
 
-  const productTagNames = new Set(
-    tags.map(tag => tag.name.toLowerCase()),
-  );
-  const forYouTags = partnerTags
-    .map(tag => ({
-      id: tag.id,
-      name: typeof tag.name === 'string' ? tag.name.trim() : '',
-    }))
-    .filter(
-      tag =>
-        tag.id > 0 &&
-        tag.name &&
-        productTagNames.has(tag.name.toLowerCase()),
-    );
+  const forYouTags = await fetchForYouTagsMatchingProductTags(session, tags);
 
   const saleOk = Boolean(template.sale_ok);
   const websitePublished = Boolean(template.website_published);
@@ -815,10 +853,12 @@ export async function updateOdooProductAppAccess(
   const values: Record<string, unknown> = {};
 
   if (typeof input.enableQrApp === 'boolean') {
-    const qrAppTagId = await ensureOdooQrAppTagId(session);
-    const current = await readOdooRecordAsUser<{
-      product_tag_ids?: number[] | false;
-    }>(session, 'product.template', tmplId, ['product_tag_ids']);
+    const [qrAppTagId, current] = await Promise.all([
+      ensureOdooQrAppTagId(session),
+      readOdooRecordAsUser<{
+        product_tag_ids?: number[] | false;
+      }>(session, 'product.template', tmplId, ['product_tag_ids']),
+    ]);
     const currentIds = Array.isArray(current?.product_tag_ids)
       ? current.product_tag_ids.filter(id => Number.isFinite(id) && id > 0)
       : [];
@@ -840,55 +880,65 @@ export async function updateOdooProductAppAccess(
     const selectedPartnerIds = input.forYouTagIds.filter(
       id => Number.isFinite(id) && id > 0,
     );
-    const partnerTags = await fetchOdooPartnerTags(userId);
-    const partnerById = new Map(
-      partnerTags.map(tag => [
-        tag.id,
-        typeof tag.name === 'string' ? tag.name.trim() : '',
-      ]),
-    );
-    const managedNames = new Set(
-      partnerTags
-        .map(tag => (typeof tag.name === 'string' ? tag.name.trim() : ''))
-        .filter(Boolean)
-        .map(name => name.toLowerCase()),
-    );
 
-    const selectedNames = selectedPartnerIds
-      .map(id => partnerById.get(id) || '')
+    const [selectedPartnerRows, current] = await Promise.all([
+      selectedPartnerIds.length
+        ? readOdooRecords<{ id: number; name: string | false }>(
+            session,
+            'res.partner.category',
+            selectedPartnerIds,
+            ['id', 'name'],
+          )
+        : Promise.resolve([]),
+      readOdooRecordAsUser<{
+        product_tag_ids?: number[] | false;
+      }>(session, 'product.template', tmplId, ['product_tag_ids']),
+    ]);
+
+    const selectedNames = selectedPartnerRows
+      .map(row => (typeof row.name === 'string' ? row.name.trim() : ''))
       .filter(Boolean);
 
-    const syncedProductTagIds: number[] = [];
-    for (const name of selectedNames) {
-      // Contact tag name → product.tag (create if missing), then attach to product.
-      syncedProductTagIds.push(
-        await ensureOdooProductTagIdByName(session, name),
-      );
-    }
-
-    const current = await readOdooRecordAsUser<{
-      product_tag_ids?: number[] | false;
-    }>(session, 'product.template', tmplId, ['product_tag_ids']);
     const currentTagIds = Array.isArray(current?.product_tag_ids)
       ? current.product_tag_ids.filter(id => Number.isFinite(id) && id > 0)
       : [];
 
-    const tagRows = currentTagIds.length
-      ? await readOdooRecords<{ id: number; name: string | false }>(
-          session,
-          'product.tag',
-          currentTagIds,
-          ['id', 'name'],
-        )
-      : [];
+    const [syncedProductTagIds, tagRows] = await Promise.all([
+      Promise.all(
+        selectedNames.map(name => ensureOdooProductTagIdByName(session, name)),
+      ),
+      currentTagIds.length
+        ? readOdooRecords<{ id: number; name: string | false }>(
+            session,
+            'product.tag',
+            currentTagIds,
+            ['id', 'name'],
+          )
+        : Promise.resolve([]),
+    ]);
+
+    const currentProductTags = tagRows
+      .map(row => ({
+        id: row.id,
+        name: typeof row.name === 'string' ? row.name.trim() : '',
+      }))
+      .filter(row => row.id > 0 && row.name);
+
+    const matchedForYou = await fetchForYouTagsMatchingProductTags(
+      session,
+      currentProductTags,
+    );
+    const managedNames = new Set(
+      [
+        ...matchedForYou.map(tag => tag.name),
+        ...selectedNames,
+      ].map(name => name.toLowerCase()),
+    );
 
     // Keep tags that are not "For you" contact-tag mirrors (e.g. QR App).
-    const keptIds = tagRows
+    const keptIds = currentProductTags
       .filter(row => {
-        const name = String(row.name || '')
-          .trim()
-          .toLowerCase();
-        if (!name) return false;
+        const name = row.name.toLowerCase();
         if (name === QR_APP_TAG_NAME.toLowerCase()) return true;
         return !managedNames.has(name);
       })
@@ -914,7 +964,7 @@ export async function updateOdooProductAppAccess(
   }
 
   await writeOdooRecordAsUser(session, 'product.template', tmplId, values);
-  return fetchOdooProductAppAccess(userId, productId);
+  return fetchOdooProductAppAccess(userId, productId, { templateId: tmplId });
 }
 
 /* ─── Inventory: On Hand + Moves History ─── */
