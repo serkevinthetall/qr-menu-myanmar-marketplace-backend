@@ -3,11 +3,14 @@ import { Router } from 'express';
 import { authMiddleware } from '../middleware/auth.js';
 import { getOdooSession } from '../services/odoo-session.store.js';
 import {
+  fetchOdooProductAppAccess,
   fetchOdooProductById,
   fetchOdooProductImageBase64,
   fetchOdooProductPrices,
+  fetchOdooProductTags,
   fetchOdooProducts,
   resolveProductFavoriteField,
+  updateOdooProductAppAccess,
   updateOdooProductFavorite,
   updateOdooProductPrices,
 } from '../services/odoo.service.js';
@@ -87,6 +90,22 @@ async function favoriteForProduct(
   return stored.has(productId);
 }
 
+function mapAppAccess(app: Awaited<ReturnType<typeof fetchOdooProductAppAccess>>) {
+  return {
+    saleOk: app.saleOk,
+    websitePublished: app.websitePublished,
+    hasQrAppTag: app.hasQrAppTag,
+    hasEcommerceCategory: app.hasEcommerceCategory,
+    readyForApp: app.readyForApp,
+    tagIds: app.tagIds.map(String),
+    tags: app.tags.map(tag => ({ id: String(tag.id), name: tag.name })),
+    ecommerceCategories: app.ecommerceCategories.map(cat => ({
+      id: String(cat.id),
+      name: cat.name,
+    })),
+  };
+}
+
 router.get('/', async (req: AuthRequest, res) => {
   try {
     const limitRaw = Number(req.query.limit);
@@ -149,6 +168,20 @@ router.get('/', async (req: AuthRequest, res) => {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load products.';
+    return res.status(500).json({ message });
+  }
+});
+
+router.get('/tags', async (req: AuthRequest, res) => {
+  try {
+    const tags = await fetchOdooProductTags(req.user!.id);
+    return res.json({
+      data: tags.map(tag => ({ id: String(tag.id), name: tag.name })),
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load product tags.';
+    console.error('[products] tags', message);
     return res.status(500).json({ message });
   }
 });
@@ -222,6 +255,18 @@ router.get('/:id', async (req: AuthRequest, res) => {
       );
     }
 
+    let appAccess = null;
+    try {
+      appAccess = mapAppAccess(
+        await fetchOdooProductAppAccess(req.user!.id, product.id),
+      );
+    } catch (appError) {
+      console.warn(
+        '[products] app access unavailable:',
+        appError instanceof Error ? appError.message : appError,
+      );
+    }
+
     return res.json({
       data: {
         id: String(product.id),
@@ -240,6 +285,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
         favorite,
         premiumPrice: premium,
         proPrice: pro,
+        appAccess,
       },
     });
   } catch (error) {
@@ -247,6 +293,53 @@ router.get('/:id', async (req: AuthRequest, res) => {
       error instanceof Error ? error.message : 'Failed to load product.';
     console.error('[products]', message);
     return res.status(500).json({ message });
+  }
+});
+
+router.put('/:id/app', async (req: AuthRequest, res) => {
+  const productId = Number(req.params.id);
+  if (!Number.isFinite(productId) || productId <= 0) {
+    return res.status(400).json({ message: 'Invalid product id.' });
+  }
+
+  const body = req.body ?? {};
+  const enableQrApp = Boolean(body.enableQrApp);
+  const websitePublished =
+    typeof body.websitePublished === 'boolean'
+      ? body.websitePublished
+      : undefined;
+  const tagIds = Array.isArray(body.tagIds)
+    ? body.tagIds
+        .map((id: unknown) => Number(id))
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+    : undefined;
+
+  if (
+    !enableQrApp &&
+    websitePublished === undefined &&
+    tagIds === undefined
+  ) {
+    return res.status(400).json({ message: 'No app settings to update.' });
+  }
+
+  try {
+    const app = await updateOdooProductAppAccess(req.user!.id, productId, {
+      enableQrApp: enableQrApp || undefined,
+      websitePublished,
+      tagIds,
+    });
+    return res.json({ data: mapAppAccess(app) });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to update product app settings.';
+    console.error('[products] app', message);
+    let status = 500;
+    if (/session expired/i.test(message)) status = 401;
+    else if (/not found|invalid product/i.test(message)) status = 404;
+    else if (/no app settings/i.test(message)) status = 400;
+    return res.status(status).json({ message });
   }
 });
 

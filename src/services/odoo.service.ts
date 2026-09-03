@@ -183,19 +183,19 @@ export async function authenticateWithOdoo(login: string, password: string) {
   let response: Response;
   try {
     response = await fetch(`${env.odooUrl}/web/session/authenticate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          db: env.odooDb,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        db: env.odooDb,
           login: login.trim(),
-          password,
-        },
-        id: Date.now(),
-      }),
-    });
+        password,
+      },
+      id: Date.now(),
+    }),
+  });
   } catch {
     throw new Error(
       'Could not reach Odoo. Check ODOO_URL on the server and try again.',
@@ -347,18 +347,18 @@ export async function fetchOdooProducts(
   }
 
   const callSearchRead = async (searchDomain: unknown[]) => {
-    const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: session.cookie,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          model: 'product.product',
-          method: 'search_read',
+  const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: session.cookie,
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        model: 'product.product',
+        method: 'search_read',
           args: [searchDomain, fields],
           kwargs: {
             order:
@@ -433,14 +433,14 @@ export async function fetchOdooProducts(
 }
 
 const PRODUCT_DETAIL_FIELDS = [
-  'id',
-  'name',
-  'default_code',
-  'list_price',
-  'qty_available',
-  'active',
-  'categ_id',
-  'uom_id',
+            'id',
+            'name',
+            'default_code',
+            'list_price',
+            'qty_available',
+            'active',
+            'categ_id',
+            'uom_id',
   'barcode',
   'description_sale',
   'type',
@@ -554,6 +554,239 @@ export async function updateOdooProductFavorite(
     [favoriteField.name]: value,
   });
   return true;
+}
+
+export type OdooProductTag = {
+  id: number;
+  name: string;
+};
+
+export type OdooProductAppAccess = {
+  templateId: number;
+  saleOk: boolean;
+  websitePublished: boolean;
+  hasQrAppTag: boolean;
+  hasEcommerceCategory: boolean;
+  tagIds: number[];
+  tags: OdooProductTag[];
+  ecommerceCategories: { id: number; name: string }[];
+  readyForApp: boolean;
+};
+
+const QR_APP_TAG_NAME = 'QR App';
+
+async function resolveProductTemplateId(
+  session: { cookie: string; uid: number },
+  productId: number,
+): Promise<number> {
+  const product = await readOdooRecordAsUser<{
+    product_tmpl_id?: [number, string] | false;
+  }>(session, 'product.product', productId, ['product_tmpl_id']);
+  const tmplId = templateIdFromProduct(product ?? {});
+  if (!tmplId) {
+    throw new Error('Could not resolve product template.');
+  }
+  return tmplId;
+}
+
+export async function fetchOdooProductTags(
+  userId: string,
+): Promise<OdooProductTag[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const rows = await searchReadOdooRecords<{ id: number; name: string | false }>(
+    session,
+    'product.tag',
+    [],
+    ['id', 'name'],
+    { order: 'name asc', limit: 500 },
+  );
+
+  return rows
+    .map(row => ({
+      id: row.id,
+      name: typeof row.name === 'string' ? row.name.trim() : '',
+    }))
+    .filter(row => row.id > 0 && row.name);
+}
+
+async function ensureOdooQrAppTagId(session: {
+  cookie: string;
+  uid: number;
+}): Promise<number> {
+  const existing = await searchReadOdooRecords<{ id: number; name: string | false }>(
+    session,
+    'product.tag',
+    [['name', '=ilike', QR_APP_TAG_NAME]],
+    ['id', 'name'],
+    { limit: 5 },
+  );
+  const exact = existing.find(
+    row =>
+      String(row.name || '')
+        .trim()
+        .toLowerCase() === QR_APP_TAG_NAME.toLowerCase(),
+  );
+  if (exact?.id) {
+    return exact.id;
+  }
+  if (existing[0]?.id) {
+    return existing[0].id;
+  }
+
+  return createOdooRecord(session, 'product.tag', { name: QR_APP_TAG_NAME });
+}
+
+export async function fetchOdooProductAppAccess(
+  userId: string,
+  productId: number,
+): Promise<OdooProductAppAccess> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(productId) || productId <= 0) {
+    throw new Error('Invalid product id.');
+  }
+
+  const tmplId = await resolveProductTemplateId(session, productId);
+  type TemplateRow = {
+    id: number;
+    sale_ok?: boolean;
+    website_published?: boolean;
+    product_tag_ids?: number[] | false;
+    public_categ_ids?: number[] | false;
+  };
+
+  const template = await readOdooRecordAsUser<TemplateRow>(
+    session,
+    'product.template',
+    tmplId,
+    [
+      'id',
+      'sale_ok',
+      'website_published',
+      'product_tag_ids',
+      'public_categ_ids',
+    ],
+  );
+  if (!template) {
+    throw new Error('Product template not found.');
+  }
+
+  const tagIds = Array.isArray(template.product_tag_ids)
+    ? template.product_tag_ids.filter(id => Number.isFinite(id) && id > 0)
+    : [];
+  const categIds = Array.isArray(template.public_categ_ids)
+    ? template.public_categ_ids.filter(id => Number.isFinite(id) && id > 0)
+    : [];
+
+  const [tagRows, categRows] = await Promise.all([
+    tagIds.length
+      ? readOdooRecords<{ id: number; name: string | false }>(
+          session,
+          'product.tag',
+          tagIds,
+          ['id', 'name'],
+        )
+      : Promise.resolve([]),
+    categIds.length
+      ? readOdooRecords<{ id: number; name: string | false }>(
+          session,
+          'product.public.category',
+          categIds,
+          ['id', 'name'],
+        )
+      : Promise.resolve([]),
+  ]);
+
+  const tags = tagRows
+    .map(row => ({
+      id: row.id,
+      name: typeof row.name === 'string' ? row.name.trim() : '',
+    }))
+    .filter(row => row.id > 0 && row.name);
+  const ecommerceCategories = categRows
+    .map(row => ({
+      id: row.id,
+      name: typeof row.name === 'string' ? row.name.trim() : '',
+    }))
+    .filter(row => row.id > 0 && row.name);
+
+  const saleOk = Boolean(template.sale_ok);
+  const websitePublished = Boolean(template.website_published);
+  const hasQrAppTag = tags.some(
+    tag => tag.name.toLowerCase() === QR_APP_TAG_NAME.toLowerCase(),
+  );
+  const hasEcommerceCategory = ecommerceCategories.length > 0;
+
+  return {
+    templateId: tmplId,
+    saleOk,
+    websitePublished,
+    hasQrAppTag,
+    hasEcommerceCategory,
+    tagIds,
+    tags,
+    ecommerceCategories,
+    readyForApp: saleOk && websitePublished && hasQrAppTag && hasEcommerceCategory,
+  };
+}
+
+export async function updateOdooProductAppAccess(
+  userId: string,
+  productId: number,
+  input: {
+    websitePublished?: boolean;
+    tagIds?: number[];
+    enableQrApp?: boolean;
+  },
+): Promise<OdooProductAppAccess> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(productId) || productId <= 0) {
+    throw new Error('Invalid product id.');
+  }
+
+  const tmplId = await resolveProductTemplateId(session, productId);
+  const values: Record<string, unknown> = {};
+
+  if (input.enableQrApp) {
+    const qrAppTagId = await ensureOdooQrAppTagId(session);
+    const current = await readOdooRecordAsUser<{
+      product_tag_ids?: number[] | false;
+    }>(session, 'product.template', tmplId, ['product_tag_ids']);
+    const currentIds = Array.isArray(current?.product_tag_ids)
+      ? current.product_tag_ids.filter(id => Number.isFinite(id) && id > 0)
+      : [];
+    const nextIds = currentIds.includes(qrAppTagId)
+      ? currentIds
+      : [...currentIds, qrAppTagId];
+
+    values.website_published = true;
+    values.sale_ok = true;
+    values.product_tag_ids = [[6, 0, nextIds]];
+  } else {
+    if (typeof input.websitePublished === 'boolean') {
+      values.website_published = input.websitePublished;
+    }
+    if (input.tagIds) {
+      const tagIds = input.tagIds.filter(id => Number.isFinite(id) && id > 0);
+      values.product_tag_ids = [[6, 0, tagIds]];
+    }
+  }
+
+  if (Object.keys(values).length === 0) {
+    throw new Error('No app settings to update.');
+  }
+
+  await writeOdooRecordAsUser(session, 'product.template', tmplId, values);
+  return fetchOdooProductAppAccess(userId, productId);
 }
 
 /* ─── Inventory: On Hand + Moves History ─── */
@@ -2092,7 +2325,7 @@ export async function fetchOdooQuotations(
   if (data.error) {
     const message = normalizeOdooErrorMessage(
       data.error.data?.message ??
-        data.error.message ??
+      data.error.message ??
         'Failed to load quotations.',
     );
     throw new Error(message);
@@ -2960,8 +3193,8 @@ export async function fetchOdooQuotationLines(
     'sale.order.line',
     'search_read',
     [
-      [['order_id', '=', quotationId]],
-      ORDER_LINE_FIELDS,
+    [['order_id', '=', quotationId]],
+    ORDER_LINE_FIELDS,
     ],
     { order: 'sequence asc, id asc' },
   );
@@ -2993,7 +3226,7 @@ export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> 
       [],
       fields,
       {
-        order: 'name asc',
+          order: 'name asc',
         limit: pageSize,
         offset: page * pageSize,
       },
