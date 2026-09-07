@@ -1,5 +1,6 @@
 import cors from 'cors';
 import express from 'express';
+import helmet from 'helmet';
 import morgan from 'morgan';
 
 import { env, isAllowedCorsOrigin } from './config/env.js';
@@ -14,6 +15,15 @@ export function createApp() {
   const app = express();
 
   app.set('trust proxy', 1);
+
+  app.use(
+    helmet({
+      // JSON API + cross-origin frontend (product images, etc.).
+      contentSecurityPolicy: false,
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
 
   app.use(
     cors({

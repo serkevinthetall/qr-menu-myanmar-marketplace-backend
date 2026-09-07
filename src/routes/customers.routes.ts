@@ -19,6 +19,7 @@ import {
   updateOdooContact,
 } from '../services/odoo.service.js';
 import { splitTagNames, validateMyanmarPhone } from '../utils/myanmar-phone.js';
+import { assertPortalPassword } from '../utils/portal-password.js';
 import { AuthRequest } from '../types/auth.js';
 
 const router = Router();
@@ -648,8 +649,14 @@ router.post('/:id/portal-access', async (req: AuthRequest, res) => {
     return res.status(400).json({ message: 'Invalid contact id.' });
   }
 
-  const password =
-    typeof req.body?.password === 'string' ? req.body.password : '';
+  let password: string;
+  try {
+    password = assertPortalPassword(req.body?.password);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Password is required.';
+    return res.status(400).json({ message });
+  }
 
   try {
     const portal = await grantOdooPartnerPortalAccess(

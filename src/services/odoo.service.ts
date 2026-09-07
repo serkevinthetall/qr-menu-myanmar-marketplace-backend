@@ -4,6 +4,7 @@ import {
   normalizeMyanmarPhone,
 } from '../utils/myanmar-phone.js';
 import { normalizeOdooErrorMessage } from '../utils/odoo-session-error.js';
+import { assertPortalPassword } from '../utils/portal-password.js';
 import {
   deleteOdooSession,
   getOdooSession,
@@ -3627,7 +3628,7 @@ async function setOdooUserPassword(
   password: string,
 ): Promise<void> {
   if (!password) {
-    return;
+    throw new Error('Password is required.');
   }
   await odooCallKw(
     session.cookie,
@@ -3903,7 +3904,7 @@ export async function grantOdooPartnerPortalAccess(
     throw new Error('Invalid contact id.');
   }
 
-  const pwd = String(password ?? '');
+  const pwd = assertPortalPassword(password);
 
   const partner = await fetchOdooContactById(userId, partnerId);
   if (!partner) {
