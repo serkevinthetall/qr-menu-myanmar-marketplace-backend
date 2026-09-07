@@ -5,6 +5,7 @@ export type OdooSession = {
   createdAt: number;
 };
 
+/** Per-request / per-instance cache keyed by user id (hydrated from auth session store). */
 const sessions = new Map<string, OdooSession>();
 
 export function setOdooSession(userId: string, session: OdooSession) {
@@ -17,23 +18,4 @@ export function getOdooSession(userId: string) {
 
 export function deleteOdooSession(userId: string) {
   sessions.delete(userId);
-}
-
-/** Resolve Odoo session from JWT claims (serverless) or in-memory store (local dev). */
-export function resolveOdooSession(payload: {
-  sub: string;
-  email: string;
-  odooCookie?: string;
-  odooUid?: number;
-}): OdooSession | null {
-  if (payload.odooCookie && payload.odooUid) {
-    return {
-      cookie: payload.odooCookie,
-      uid: payload.odooUid,
-      login: payload.email,
-      createdAt: Date.now(),
-    };
-  }
-
-  return getOdooSession(payload.sub) ?? null;
 }

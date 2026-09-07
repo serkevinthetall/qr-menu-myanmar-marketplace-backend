@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { Router } from 'express';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { z } from 'zod';
@@ -5,6 +7,10 @@ import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { authMiddleware } from '../../middleware/auth.js';
 import { loginRateLimitMiddleware } from '../../middleware/login-rate-limit.js';
+import {
+  deleteAuthSession,
+  saveAuthSession,
+} from '../../services/auth-session.store.js';
 import {
   clientIpFromRequest,
   recordLoginDevice,
@@ -15,7 +21,7 @@ import {
   destroyOdooSession,
 } from '../../services/odoo.service.js';
 import { AuthRequest } from '../../types/auth.js';
-import { jwtExpiresAtIso } from '../../utils/jwt-expiry.js';
+import { jwtExpiresAtIso, parseJwtExpiresInMs } from '../../utils/jwt-expiry.js';
 
 const router = Router();
 
@@ -25,7 +31,7 @@ const loginSchema = z.object({
   password: z.string().min(1, 'Password is required.'),
 });
 
-/** Sales-rep app login — same Odoo auth, tagged for the handheld surface. */
+/** Sales-rep app login — same Odoo auth; Bearer JWT with sid (no Odoo cookie). */
 router.post('/login', loginRateLimitMiddleware, async (req, res) => {
   const parsed = loginSchema.safeParse({
     email: typeof req.body?.email === 'string' ? req.body.email.trim() : req.body?.email,
@@ -49,15 +55,30 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
       typeof req.headers['user-agent'] === 'string'
         ? req.headers['user-agent']
         : '';
-    const sessionId = await recordLoginDevice({
+    const sessionId =
+      (await recordLoginDevice({
+        userId: String(odooUser.uid),
+        userEmail: odooUser.email,
+        userName: odooUser.name,
+        meta: {
+          userAgent,
+          ip: clientIpFromRequest(req),
+          surface: 'app',
+        },
+      })) || randomUUID();
+
+    const expiresAt = jwtExpiresAtIso(env.jwtExpiresIn);
+    const expiresAtMs = Date.now() + parseJwtExpiresInMs(env.jwtExpiresIn);
+
+    await saveAuthSession({
+      sessionId,
       userId: String(odooUser.uid),
-      userEmail: odooUser.email,
-      userName: odooUser.name,
-      meta: {
-        userAgent,
-        ip: clientIpFromRequest(req),
-        surface: 'app',
-      },
+      email: odooUser.email,
+      name: odooUser.name,
+      odooCookie: odooUser.cookie,
+      odooUid: odooUser.uid,
+      surface: 'app',
+      expiresAtMs,
     });
 
     const signOptions: SignOptions = {
@@ -69,16 +90,12 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
         sub: String(odooUser.uid),
         email: odooUser.email,
         name: odooUser.name,
-        odooCookie: odooUser.cookie,
-        odooUid: odooUser.uid,
+        sid: sessionId,
         surface: 'app',
-        ...(sessionId ? { sid: sessionId } : {}),
       },
       env.jwtSecret,
       signOptions,
     );
-
-    const expiresAt = jwtExpiresAtIso(env.jwtExpiresIn);
 
     return res.json({
       token,
@@ -89,6 +106,7 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
       },
       expiresAt,
       surface: 'app',
+      authMode: 'bearer',
     });
   } catch (error) {
     const message =
@@ -98,13 +116,18 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
 });
 
 router.get('/me', authMiddleware, (req: AuthRequest, res) => {
-  return res.json({ user: req.user, surface: 'app' });
+  return res.json({
+    user: req.user,
+    expiresAt: req.tokenExpiresAt,
+    surface: 'app',
+  });
 });
 
 router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
   if (req.user?.id) {
     if (req.sessionId) {
       await revokeLoginDevice(req.user.id, req.sessionId);
+      await deleteAuthSession(req.sessionId);
     }
     await destroyOdooSession(req.user.id, req.odooSession);
   }

@@ -130,8 +130,7 @@ export async function recordLoginDevice(input: {
         '[login-devices] Failed to persist device session:',
         error instanceof Error ? error.message : error,
       );
-      // Do not put an unpersisted sid in the JWT (other instances would revoke it).
-      return null;
+      // Fall through to memory so sid remains usable with the auth-session store.
     }
   }
 
@@ -178,7 +177,7 @@ export async function isLoginDeviceRevoked(
   sessionId: string | undefined,
 ): Promise<boolean> {
   if (!sessionId) {
-    // Legacy tokens without sid remain valid.
+    // Tokens without sid are rejected by authMiddleware separately.
     return false;
   }
 
@@ -188,18 +187,20 @@ export async function isLoginDeviceRevoked(
       const row = await LoginDeviceModel.findOne({ sessionId })
         .select({ revokedAt: 1 })
         .lean();
-      if (!row) {
-        // Unknown sid (DB wiped) — treat as revoked for safety on new tokens.
-        return true;
+      if (row) {
+        return Boolean(row.revokedAt);
       }
-      return Boolean(row.revokedAt);
+      // No Mongo row (persist fell back to memory, or device list incomplete).
+      const mem = memoryDevices.get(sessionId);
+      if (mem) return Boolean(mem.revokedAt);
+      return false;
     } catch {
       return false;
     }
   }
 
   const row = memoryDevices.get(sessionId);
-  if (!row) return true;
+  if (!row) return false;
   return Boolean(row.revokedAt);
 }
 
@@ -288,7 +289,7 @@ export async function revokeLoginDeviceById(
   userId: string,
   deviceId: string,
   currentSessionId?: string,
-): Promise<{ ok: boolean; revokedCurrent: boolean }> {
+): Promise<{ ok: boolean; revokedCurrent: boolean; sessionId?: string }> {
   if (isMongoConfigured()) {
     try {
       await connectMongo();
@@ -306,6 +307,7 @@ export async function revokeLoginDeviceById(
       );
       return {
         ok: true,
+        sessionId: row.sessionId,
         revokedCurrent: Boolean(
           currentSessionId && row.sessionId === currentSessionId,
         ),
@@ -327,6 +329,7 @@ export async function revokeLoginDeviceById(
   match.revokedAt = new Date();
   return {
     ok: true,
+    sessionId: match.sessionId,
     revokedCurrent: Boolean(
       currentSessionId && match.sessionId === currentSessionId,
     ),

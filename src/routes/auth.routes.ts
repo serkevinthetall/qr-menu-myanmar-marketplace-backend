@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { Router } from 'express';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { z } from 'zod';
@@ -5,6 +7,10 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { loginRateLimitMiddleware } from '../middleware/login-rate-limit.js';
+import {
+  deleteAuthSession,
+  saveAuthSession,
+} from '../services/auth-session.store.js';
 import {
   clientIpFromRequest,
   listLoginDevices,
@@ -17,7 +23,11 @@ import {
   destroyOdooSession,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
-import { jwtExpiresAtIso } from '../utils/jwt-expiry.js';
+import {
+  clearWebAuthCookie,
+  setWebAuthCookie,
+} from '../utils/auth-cookie.js';
+import { jwtExpiresAtIso, parseJwtExpiresInMs } from '../utils/jwt-expiry.js';
 
 const router = Router();
 
@@ -50,44 +60,62 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
       typeof req.headers['user-agent'] === 'string'
         ? req.headers['user-agent']
         : '';
-    const sessionId = await recordLoginDevice({
+    const sessionId =
+      (await recordLoginDevice({
+        userId: String(odooUser.uid),
+        userEmail: odooUser.email,
+        userName: odooUser.name,
+        meta: {
+          userAgent,
+          ip: clientIpFromRequest(req),
+          surface: 'web',
+        },
+      })) || randomUUID();
+
+    const expiresAt = jwtExpiresAtIso(env.jwtExpiresIn);
+    const expiresAtMs = Date.now() + parseJwtExpiresInMs(env.jwtExpiresIn);
+
+    await saveAuthSession({
+      sessionId,
       userId: String(odooUser.uid),
-      userEmail: odooUser.email,
-      userName: odooUser.name,
-      meta: {
-        userAgent,
-        ip: clientIpFromRequest(req),
-        surface: 'web',
-      },
+      email: odooUser.email,
+      name: odooUser.name,
+      odooCookie: odooUser.cookie,
+      odooUid: odooUser.uid,
+      surface: 'web',
+      expiresAtMs,
     });
 
     const signOptions: SignOptions = {
       expiresIn: env.jwtExpiresIn as SignOptions['expiresIn'],
     };
 
+    // JWT carries sid only — Odoo cookie stays in the server session store.
     const token = jwt.sign(
       {
         sub: String(odooUser.uid),
         email: odooUser.email,
         name: odooUser.name,
-        odooCookie: odooUser.cookie,
-        odooUid: odooUser.uid,
-        ...(sessionId ? { sid: sessionId } : {}),
+        sid: sessionId,
+        surface: 'web',
       },
       env.jwtSecret,
       signOptions,
     );
 
-    const expiresAt = jwtExpiresAtIso(env.jwtExpiresIn);
+    setWebAuthCookie(res, token);
 
     return res.json({
-      token,
+      // Token omitted from body for web; httpOnly cookie is the session.
+      // Kept empty string so older clients don't crash on missing field.
+      token: '',
       user: {
         id: String(odooUser.uid),
         name: odooUser.name,
         email: odooUser.email,
       },
       expiresAt,
+      authMode: 'cookie',
     });
   } catch (error) {
     const message =
@@ -97,7 +125,10 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
 });
 
 router.get('/me', authMiddleware, (req: AuthRequest, res) => {
-  return res.json({ user: req.user });
+  return res.json({
+    user: req.user,
+    expiresAt: req.tokenExpiresAt,
+  });
 });
 
 router.get('/devices', authMiddleware, async (req: AuthRequest, res) => {
@@ -137,6 +168,12 @@ router.delete('/devices/:id', authMiddleware, async (req: AuthRequest, res) => {
     if (!result.ok) {
       return res.status(404).json({ message: 'Device session not found.' });
     }
+    if (result.sessionId) {
+      await deleteAuthSession(result.sessionId);
+    }
+    if (result.revokedCurrent) {
+      clearWebAuthCookie(res);
+    }
     return res.json({
       data: {
         revoked: true,
@@ -154,10 +191,12 @@ router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
   if (req.user?.id) {
     if (req.sessionId) {
       await revokeLoginDevice(req.user.id, req.sessionId);
+      await deleteAuthSession(req.sessionId);
     }
     await destroyOdooSession(req.user.id, req.odooSession);
   }
 
+  clearWebAuthCookie(res);
   return res.json({ message: 'Logged out successfully.' });
 });
 
