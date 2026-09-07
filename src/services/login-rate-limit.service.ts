@@ -2,12 +2,13 @@ import { Redis as UpstashRedis } from '@upstash/redis';
 import { createClient, type RedisClientType } from 'redis';
 
 /**
- * Login attempt limiter (per IP).
- * Prefers shared Redis on Vercel (Upstash REST or REDIS_URL), else in-memory
- * (local/dev only — not shared across serverless instances).
+ * Login failure limiter (per IP).
+ * Only failed password/auth attempts count — successful logins do not.
+ * Prefers shared Redis on Vercel; falls back to in-memory locally.
  */
 
-const KEY_PREFIX = 'qr-shop:login-rate:';
+// v2 clears locks created while every login POST (including the bounce loop) was counted.
+const KEY_PREFIX = 'qr-shop:login-rate:v2:';
 
 const MAX_ATTEMPTS = Math.max(
   1,
@@ -110,6 +111,45 @@ function warnMemoryFallbackOnce() {
   );
 }
 
+function resultFromCount(
+  count: number,
+  resetAt: number,
+  now = Date.now(),
+): LoginRateLimitResult {
+  if (count >= MAX_ATTEMPTS) {
+    const retryAfterSec = Math.max(1, Math.ceil((resetAt - now) / 1000));
+    return {
+      allowed: false,
+      remaining: 0,
+      limit: MAX_ATTEMPTS,
+      resetAt,
+      retryAfterSec,
+    };
+  }
+  return {
+    allowed: true,
+    remaining: Math.max(0, MAX_ATTEMPTS - count),
+    limit: MAX_ATTEMPTS,
+    resetAt,
+  };
+}
+
+function peekMemory(ip: string): LoginRateLimitResult {
+  warnMemoryFallbackOnce();
+  const now = Date.now();
+  const key = ip || 'unknown';
+  const bucket = memoryBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    return {
+      allowed: true,
+      remaining: MAX_ATTEMPTS,
+      limit: MAX_ATTEMPTS,
+      resetAt: now + WINDOW_SEC * 1000,
+    };
+  }
+  return resultFromCount(bucket.count, bucket.resetAt, now);
+}
+
 function consumeMemory(ip: string): LoginRateLimitResult {
   warnMemoryFallbackOnce();
   const now = Date.now();
@@ -120,98 +160,114 @@ function consumeMemory(ip: string): LoginRateLimitResult {
     memoryBuckets.set(key, bucket);
   }
   bucket.count += 1;
-  if (bucket.count > MAX_ATTEMPTS) {
-    const retryAfterSec = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
-    return {
-      allowed: false,
-      remaining: 0,
-      limit: MAX_ATTEMPTS,
-      resetAt: bucket.resetAt,
-      retryAfterSec,
-    };
-  }
-  return {
-    allowed: true,
-    remaining: Math.max(0, MAX_ATTEMPTS - bucket.count),
-    limit: MAX_ATTEMPTS,
-    resetAt: bucket.resetAt,
-  };
+  return resultFromCount(bucket.count, bucket.resetAt, now);
 }
 
-async function consumeUpstash(
-  client: UpstashRedis,
+async function peekRedis(
+  getCount: () => Promise<number | null>,
+  getTtl: () => Promise<number>,
+): Promise<LoginRateLimitResult | null> {
+  const countRaw = await getCount();
+  if (countRaw == null) {
+    return {
+      allowed: true,
+      remaining: MAX_ATTEMPTS,
+      limit: MAX_ATTEMPTS,
+      resetAt: Date.now() + WINDOW_SEC * 1000,
+    };
+  }
+  const count = Number(countRaw) || 0;
+  const ttl = await getTtl();
+  const retryAfterSec = ttl > 0 ? ttl : WINDOW_SEC;
+  return resultFromCount(count, Date.now() + retryAfterSec * 1000);
+}
+
+async function consumeRedisIncr(
+  incr: () => Promise<number>,
+  expireIfFirst: (count: number) => Promise<void>,
+  getTtl: () => Promise<number>,
+): Promise<LoginRateLimitResult> {
+  const count = await incr();
+  await expireIfFirst(count);
+  const ttl = await getTtl();
+  const retryAfterSec = ttl > 0 ? ttl : WINDOW_SEC;
+  return resultFromCount(count, Date.now() + retryAfterSec * 1000);
+}
+
+/** Check whether this IP is currently locked (does not increment). */
+export async function peekLoginRateLimit(
   ip: string,
 ): Promise<LoginRateLimitResult> {
   const key = `${KEY_PREFIX}${ip || 'unknown'}`;
-  const count = await client.incr(key);
-  if (count === 1) {
-    await client.expire(key, WINDOW_SEC);
-  }
-  const ttl = await client.ttl(key);
-  const retryAfterSec = ttl > 0 ? ttl : WINDOW_SEC;
-  const resetAt = Date.now() + retryAfterSec * 1000;
-  if (count > MAX_ATTEMPTS) {
-    return {
-      allowed: false,
-      remaining: 0,
-      limit: MAX_ATTEMPTS,
-      resetAt,
-      retryAfterSec,
-    };
-  }
-  return {
-    allowed: true,
-    remaining: Math.max(0, MAX_ATTEMPTS - count),
-    limit: MAX_ATTEMPTS,
-    resetAt,
-  };
-}
-
-async function consumeTcp(
-  client: RedisClientType,
-  ip: string,
-): Promise<LoginRateLimitResult> {
-  const key = `${KEY_PREFIX}${ip || 'unknown'}`;
-  const count = await client.incr(key);
-  if (count === 1) {
-    await client.expire(key, WINDOW_SEC);
-  }
-  const ttl = await client.ttl(key);
-  const retryAfterSec = ttl > 0 ? ttl : WINDOW_SEC;
-  const resetAt = Date.now() + retryAfterSec * 1000;
-  if (count > MAX_ATTEMPTS) {
-    return {
-      allowed: false,
-      remaining: 0,
-      limit: MAX_ATTEMPTS,
-      resetAt,
-      retryAfterSec,
-    };
-  }
-  return {
-    allowed: true,
-    remaining: Math.max(0, MAX_ATTEMPTS - count),
-    limit: MAX_ATTEMPTS,
-    resetAt,
-  };
-}
-
-/** Record one login attempt for this IP. Fail-open to memory if Redis errors. */
-export async function consumeLoginAttempt(
-  ip: string,
-): Promise<LoginRateLimitResult> {
   try {
     const upstash = getUpstashClient();
     if (upstash) {
-      return await consumeUpstash(upstash, ip);
+      const peeked = await peekRedis(
+        async () => {
+          const value = await upstash.get<number | string>(key);
+          if (value == null) return null;
+          return Number(value);
+        },
+        async () => Number(await upstash.ttl(key)),
+      );
+      if (peeked) return peeked;
     }
     const tcp = await getTcpClient();
     if (tcp) {
-      return await consumeTcp(tcp, ip);
+      const peeked = await peekRedis(
+        async () => {
+          const value = await tcp.get(key);
+          if (value == null) return null;
+          return Number(value);
+        },
+        async () => Number(await tcp.ttl(key)),
+      );
+      if (peeked) return peeked;
     }
   } catch (error) {
     console.error(
-      '[login-rate-limit] Redis limiter failed; using memory:',
+      '[login-rate-limit] peek failed; allowing request:',
+      error instanceof Error ? error.message : error,
+    );
+    return {
+      allowed: true,
+      remaining: MAX_ATTEMPTS,
+      limit: MAX_ATTEMPTS,
+      resetAt: Date.now() + WINDOW_SEC * 1000,
+    };
+  }
+  return peekMemory(ip);
+}
+
+/** Record one failed login (wrong password). Successful logins must not call this. */
+export async function recordFailedLoginAttempt(
+  ip: string,
+): Promise<LoginRateLimitResult> {
+  const key = `${KEY_PREFIX}${ip || 'unknown'}`;
+  try {
+    const upstash = getUpstashClient();
+    if (upstash) {
+      return await consumeRedisIncr(
+        () => upstash.incr(key),
+        async count => {
+          if (count === 1) await upstash.expire(key, WINDOW_SEC);
+        },
+        async () => Number(await upstash.ttl(key)),
+      );
+    }
+    const tcp = await getTcpClient();
+    if (tcp) {
+      return await consumeRedisIncr(
+        () => tcp.incr(key),
+        async count => {
+          if (count === 1) await tcp.expire(key, WINDOW_SEC);
+        },
+        async () => Number(await tcp.ttl(key)),
+      );
+    }
+  } catch (error) {
+    console.error(
+      '[login-rate-limit] record failed; using memory:',
       error instanceof Error ? error.message : error,
     );
   }

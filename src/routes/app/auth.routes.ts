@@ -6,7 +6,10 @@ import { z } from 'zod';
 
 import { env } from '../../config/env.js';
 import { authMiddleware } from '../../middleware/auth.js';
-import { loginRateLimitMiddleware } from '../../middleware/login-rate-limit.js';
+import {
+  loginClientIp,
+  loginRateLimitMiddleware,
+} from '../../middleware/login-rate-limit.js';
 import {
   deleteAuthSession,
   saveAuthSession,
@@ -16,6 +19,7 @@ import {
   recordLoginDevice,
   revokeLoginDevice,
 } from '../../services/login-device.service.js';
+import { recordFailedLoginAttempt } from '../../services/login-rate-limit.service.js';
 import {
   authenticateWithOdoo,
   destroyOdooSession,
@@ -112,6 +116,9 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
     const message =
       error instanceof Error ? error.message : 'Login failed. Please try again.';
     const status = /session store unavailable/i.test(message) ? 503 : 401;
+    if (status === 401) {
+      void recordFailedLoginAttempt(loginClientIp(req));
+    }
     return res.status(status).json({ message });
   }
 });

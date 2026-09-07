@@ -1,14 +1,17 @@
 import { NextFunction, Request, Response } from 'express';
 
 import { clientIpFromRequest } from '../services/login-device.service.js';
-import { consumeLoginAttempt } from '../services/login-rate-limit.service.js';
+import { peekLoginRateLimit } from '../services/login-rate-limit.service.js';
 
 function retryMinutesLabel(retryAfterSec: number): string {
   const minutes = Math.max(1, Math.ceil(retryAfterSec / 60));
   return minutes === 1 ? '1 minute' : `${minutes} minutes`;
 }
 
-/** Limit login POSTs per client IP (shared Redis on Vercel when configured). */
+/**
+ * Block login when this IP already exceeded failed-attempt quota.
+ * Does not increment — failed attempts are recorded in the login handler.
+ */
 export async function loginRateLimitMiddleware(
   req: Request,
   res: Response,
@@ -17,7 +20,7 @@ export async function loginRateLimitMiddleware(
   const ip = clientIpFromRequest(req) || req.ip || 'unknown';
 
   try {
-    const result = await consumeLoginAttempt(ip);
+    const result = await peekLoginRateLimit(ip);
     res.setHeader('X-RateLimit-Limit', String(result.limit));
     res.setHeader('X-RateLimit-Remaining', String(result.remaining));
     res.setHeader(
@@ -39,7 +42,10 @@ export async function loginRateLimitMiddleware(
       '[login-rate-limit] middleware error:',
       error instanceof Error ? error.message : error,
     );
-    // Fail open so Redis outages do not block all sign-ins.
     return next();
   }
+}
+
+export function loginClientIp(req: Request): string {
+  return clientIpFromRequest(req) || req.ip || 'unknown';
 }
