@@ -14,7 +14,18 @@ type JwtPayload = {
   odooUid?: number;
   /** Login device session id (Settings → Devices). */
   sid?: string;
+  iat?: number;
 };
+
+function isTokenInvalidatedByMassLogout(payload: JwtPayload): boolean {
+  const raw = env.authInvalidateBefore;
+  if (!raw) return false;
+  const cutoffMs = Date.parse(raw);
+  if (!Number.isFinite(cutoffMs)) return false;
+  // Prefer JWT iat; if missing, force re-login while cutoff is set.
+  if (typeof payload.iat !== 'number') return true;
+  return payload.iat * 1000 < cutoffMs;
+}
 
 export async function authMiddleware(
   req: AuthRequest,
@@ -31,6 +42,12 @@ export async function authMiddleware(
 
   try {
     const payload = jwt.verify(token, env.jwtSecret) as JwtPayload;
+
+    if (isTokenInvalidatedByMassLogout(payload)) {
+      return res.status(401).json({
+        message: 'Please log in again.',
+      });
+    }
 
     if (await isLoginDeviceRevoked(payload.sid)) {
       return res.status(401).json({
