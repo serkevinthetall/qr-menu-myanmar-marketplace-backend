@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { env } from '../config/env.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { loginRateLimitMiddleware } from '../middleware/login-rate-limit.js';
 import {
   clientIpFromRequest,
   listLoginDevices,
@@ -25,7 +26,7 @@ const loginSchema = z.object({
   password: z.string().min(1, 'Password is required.'),
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginRateLimitMiddleware, async (req, res) => {
   const parsed = loginSchema.safeParse({
     email: typeof req.body?.email === 'string' ? req.body.email.trim() : req.body?.email,
     password:

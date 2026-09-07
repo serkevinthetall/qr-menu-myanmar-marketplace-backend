@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { env } from '../../config/env.js';
 import { authMiddleware } from '../../middleware/auth.js';
+import { loginRateLimitMiddleware } from '../../middleware/login-rate-limit.js';
 import {
   authenticateWithOdoo,
   destroyOdooSession,
@@ -19,7 +20,7 @@ const loginSchema = z.object({
 });
 
 /** Sales-rep app login — same Odoo auth, tagged for the handheld surface. */
-router.post('/login', async (req, res) => {
+router.post('/login', loginRateLimitMiddleware, async (req, res) => {
   const parsed = loginSchema.safeParse({
     email: typeof req.body?.email === 'string' ? req.body.email.trim() : req.body?.email,
     password:
