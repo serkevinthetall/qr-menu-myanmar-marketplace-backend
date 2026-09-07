@@ -7,10 +7,6 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
-  loginClientIp,
-  loginRateLimitMiddleware,
-} from '../middleware/login-rate-limit.js';
-import {
   deleteAuthSession,
   saveAuthSession,
 } from '../services/auth-session.store.js';
@@ -21,7 +17,6 @@ import {
   revokeLoginDevice,
   revokeLoginDeviceById,
 } from '../services/login-device.service.js';
-import { recordFailedLoginAttempt } from '../services/login-rate-limit.service.js';
 import {
   authenticateWithOdoo,
   destroyOdooSession,
@@ -41,7 +36,7 @@ const loginSchema = z.object({
   password: z.string().min(1, 'Password is required.'),
 });
 
-router.post('/login', loginRateLimitMiddleware, async (req, res) => {
+router.post('/login', async (req, res) => {
   const parsed = loginSchema.safeParse({
     email: typeof req.body?.email === 'string' ? req.body.email.trim() : req.body?.email,
     password:
@@ -124,10 +119,6 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
     const message =
       error instanceof Error ? error.message : 'Login failed. Please try again.';
     const status = /session store unavailable/i.test(message) ? 503 : 401;
-    // Only wrong-password style failures count toward the lockout.
-    if (status === 401) {
-      void recordFailedLoginAttempt(loginClientIp(req));
-    }
     return res.status(status).json({ message });
   }
 });
