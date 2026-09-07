@@ -9,4 +9,6 @@ export type AuthUser = {
 export type AuthRequest = import('express').Request & {
   user?: AuthUser;
   odooSession?: OdooSession;
+  /** JWT `sid` — login device session id. */
+  sessionId?: string;
 };

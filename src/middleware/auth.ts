@@ -2,6 +2,7 @@ import { NextFunction, Response } from 'express';
 import jwt from 'jsonwebtoken';
 
 import { env } from '../config/env.js';
+import { isLoginDeviceRevoked, touchLoginDevice } from '../services/login-device.service.js';
 import { resolveOdooSession, setOdooSession } from '../services/odoo-session.store.js';
 import { AuthRequest } from '../types/auth.js';
 
@@ -11,9 +12,11 @@ type JwtPayload = {
   name: string;
   odooCookie?: string;
   odooUid?: number;
+  /** Login device session id (Settings → Devices). */
+  sid?: string;
 };
 
-export function authMiddleware(
+export async function authMiddleware(
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -28,10 +31,19 @@ export function authMiddleware(
 
   try {
     const payload = jwt.verify(token, env.jwtSecret) as JwtPayload;
+
+    if (await isLoginDeviceRevoked(payload.sid)) {
+      return res.status(401).json({
+        message: 'This device was signed out. Please log in again.',
+      });
+    }
+
     const odooSession = resolveOdooSession(payload);
 
     if (!odooSession) {
-      return res.status(401).json({ message: 'Session expired. Please log in again.' });
+      return res
+        .status(401)
+        .json({ message: 'Session expired. Please log in again.' });
     }
 
     setOdooSession(payload.sub, odooSession);
@@ -42,6 +54,9 @@ export function authMiddleware(
       email: payload.email,
     };
     req.odooSession = odooSession;
+    req.sessionId = payload.sid;
+
+    void touchLoginDevice(payload.sid);
 
     return next();
   } catch {
