@@ -1,6 +1,6 @@
 import cors from 'cors';
-import express from 'express';
-import helmet from 'helmet';
+import express, { type RequestHandler } from 'express';
+import helmetImport from 'helmet';
 import morgan from 'morgan';
 
 import { env, isAllowedCorsOrigin } from './config/env.js';
@@ -10,6 +10,9 @@ import {
   serverlessJsonBody,
 } from './middleware/serverless-body.js';
 import routes from './routes/index.js';
+
+/** Helmet 8 default export is callable at runtime; Vercel tsc types it as a namespace. */
+const helmet = helmetImport as unknown as (options?: object) => RequestHandler;
 
 export function createApp() {
   const app = express();
