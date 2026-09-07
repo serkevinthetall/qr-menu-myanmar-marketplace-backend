@@ -17,6 +17,7 @@ import {
   destroyOdooSession,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
+import { jwtExpiresAtIso } from '../utils/jwt-expiry.js';
 
 const router = Router();
 
@@ -76,9 +77,7 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
       signOptions,
     );
 
-    const expiresAt = new Date(
-      Date.now() + 7 * 24 * 60 * 60 * 1000,
-    ).toISOString();
+    const expiresAt = jwtExpiresAtIso(env.jwtExpiresIn);
 
     return res.json({
       token,

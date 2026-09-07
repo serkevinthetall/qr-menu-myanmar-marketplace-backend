@@ -81,7 +81,7 @@ export const env = {
     nodeEnv === 'production'
       ? required('JWT_SECRET')
       : required('JWT_SECRET', 'dev-only-change-in-production'),
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '1d',
   /**
    * Optional mass logout: reject JWTs issued before this ISO timestamp.
    * Set AUTH_INVALIDATE_BEFORE on Vercel when needed; omit or leave empty to disable.
