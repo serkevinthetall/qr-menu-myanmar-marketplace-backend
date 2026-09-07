@@ -83,16 +83,10 @@ export const env = {
       : required('JWT_SECRET', 'dev-only-change-in-production'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
   /**
-   * One-time mass logout: reject JWTs issued before this ISO timestamp.
-   * Set AUTH_INVALIDATE_BEFORE on Vercel to override; set to empty string to disable.
-   * Remove the temporary default after everyone has re-logged in.
+   * Optional mass logout: reject JWTs issued before this ISO timestamp.
+   * Set AUTH_INVALIDATE_BEFORE on Vercel when needed; omit or leave empty to disable.
    */
-  authInvalidateBefore: (() => {
-    if (process.env.AUTH_INVALIDATE_BEFORE !== undefined) {
-      return process.env.AUTH_INVALIDATE_BEFORE.trim();
-    }
-    return '2026-09-07T04:09:01.000Z';
-  })(),
+  authInvalidateBefore: (process.env.AUTH_INVALIDATE_BEFORE ?? '').trim(),
   corsOrigins,
   odooUrl: required('ODOO_URL').replace(/\/$/, ''),
   odooDb: required('ODOO_DB'),
