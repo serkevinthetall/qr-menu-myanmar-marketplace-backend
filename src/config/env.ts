@@ -60,7 +60,9 @@ export function isAllowedCorsOrigin(origin: string | undefined): boolean {
     // Production custom domains for QR Shop website.
     if (
       hostname === 'qrshopmyanmar.com' ||
-      hostname.endsWith('.qrshopmyanmar.com')
+      hostname.endsWith('.qrshopmyanmar.com') ||
+      hostname === 'bsmartmyanmar.com' ||
+      hostname.endsWith('.bsmartmyanmar.com')
     ) {
       return true;
     }
