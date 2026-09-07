@@ -283,6 +283,14 @@ export async function saveAuthSession(input: {
     return row;
   }
 
+  // Memory is not shared across Vercel instances — login would appear to
+  // succeed then bounce back to /login on the next API call.
+  if ((process.env.NODE_ENV ?? 'development') === 'production') {
+    throw new Error(
+      'Session store unavailable. Configure REDIS_URL / UPSTASH_* or MONGODB_URI.',
+    );
+  }
+
   warnMemoryOnce();
   memorySessions.set(row.sessionId, row);
   return row;

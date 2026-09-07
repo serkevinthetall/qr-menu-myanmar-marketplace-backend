@@ -106,21 +106,21 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
     setWebAuthCookie(res, token);
 
     return res.json({
-      // Token omitted from body for web; httpOnly cookie is the session.
-      // Kept empty string so older clients don't crash on missing field.
-      token: '',
+      // Bearer JWT (sid only — no Odoo cookie). Cookie is also set for same-site use.
+      token,
       user: {
         id: String(odooUser.uid),
         name: odooUser.name,
         email: odooUser.email,
       },
       expiresAt,
-      authMode: 'cookie',
+      authMode: 'bearer',
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Login failed. Please try again.';
-    return res.status(401).json({ message });
+    const status = /session store unavailable/i.test(message) ? 503 : 401;
+    return res.status(status).json({ message });
   }
 });
 

@@ -111,7 +111,8 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Login failed. Please try again.';
-    return res.status(401).json({ message });
+    const status = /session store unavailable/i.test(message) ? 503 : 401;
+    return res.status(status).json({ message });
   }
 });
 
