@@ -57,6 +57,7 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
       meta: {
         userAgent,
         ip: clientIpFromRequest(req),
+        surface: 'web',
       },
     });
 

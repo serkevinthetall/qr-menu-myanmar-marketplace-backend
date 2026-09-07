@@ -6,6 +6,11 @@ import { env } from '../../config/env.js';
 import { authMiddleware } from '../../middleware/auth.js';
 import { loginRateLimitMiddleware } from '../../middleware/login-rate-limit.js';
 import {
+  clientIpFromRequest,
+  recordLoginDevice,
+  revokeLoginDevice,
+} from '../../services/login-device.service.js';
+import {
   authenticateWithOdoo,
   destroyOdooSession,
 } from '../../services/odoo.service.js';
@@ -40,6 +45,21 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
   try {
     const odooUser = await authenticateWithOdoo(email, password);
 
+    const userAgent =
+      typeof req.headers['user-agent'] === 'string'
+        ? req.headers['user-agent']
+        : '';
+    const sessionId = await recordLoginDevice({
+      userId: String(odooUser.uid),
+      userEmail: odooUser.email,
+      userName: odooUser.name,
+      meta: {
+        userAgent,
+        ip: clientIpFromRequest(req),
+        surface: 'app',
+      },
+    });
+
     const signOptions: SignOptions = {
       expiresIn: env.jwtExpiresIn as SignOptions['expiresIn'],
     };
@@ -52,6 +72,7 @@ router.post('/login', loginRateLimitMiddleware, async (req, res) => {
         odooCookie: odooUser.cookie,
         odooUid: odooUser.uid,
         surface: 'app',
+        ...(sessionId ? { sid: sessionId } : {}),
       },
       env.jwtSecret,
       signOptions,
@@ -82,6 +103,9 @@ router.get('/me', authMiddleware, (req: AuthRequest, res) => {
 
 router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
   if (req.user?.id) {
+    if (req.sessionId) {
+      await revokeLoginDevice(req.user.id, req.sessionId);
+    }
     await destroyOdooSession(req.user.id, req.odooSession);
   }
 

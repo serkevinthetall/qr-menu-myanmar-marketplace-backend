@@ -21,6 +21,8 @@ export type LoginDeviceInfo = {
 export type DeviceClientMeta = {
   userAgent?: string;
   ip?: string;
+  /** When set to app, labels the row as the handheld sales app. */
+  surface?: 'web' | 'app';
 };
 
 type MemoryDevice = {
@@ -99,6 +101,11 @@ export async function recordLoginDevice(input: {
   const userAgent = String(input.meta.userAgent || '').slice(0, 500);
   const ip = String(input.meta.ip || '').slice(0, 64);
   const described = describeUserAgent(userAgent);
+  const isAppSurface = input.meta.surface === 'app';
+  const label = isAppSurface
+    ? `Sales app on ${described.platform}`
+    : described.label;
+  const browser = isAppSurface ? 'Sales app' : described.browser;
   const now = new Date();
 
   if (isMongoConfigured()) {
@@ -109,9 +116,9 @@ export async function recordLoginDevice(input: {
         userId: input.userId,
         userEmail: input.userEmail,
         userName: input.userName,
-        label: described.label,
+        label,
         platform: described.platform,
-        browser: described.browser,
+        browser,
         userAgent,
         ip,
         lastSeenAt: now,
@@ -133,9 +140,9 @@ export async function recordLoginDevice(input: {
     userId: input.userId,
     userEmail: input.userEmail,
     userName: input.userName,
-    label: described.label,
+    label,
     platform: described.platform,
-    browser: described.browser,
+    browser,
     userAgent,
     ip,
     createdAt: now,
