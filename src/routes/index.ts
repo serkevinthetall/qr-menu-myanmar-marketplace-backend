@@ -6,6 +6,7 @@ import { Router } from 'express';
  * WEB ERP (desktop website):
  *   /api/health
  *   /api/auth/*
+ *   /api/badges
  *   /api/customers/*
  *   /api/products/*
  *   /api/inventory/*
@@ -33,6 +34,7 @@ import appInstallsRoutes from './app-installs.routes.js';
 import appPromoterCommissionsRoutes from './app-promoter-commissions.routes.js';
 import appPromotersRoutes from './app-promoters.routes.js';
 import authRoutes from './auth.routes.js';
+import badgesRoutes from './badges.routes.js';
 import customersRoutes from './customers.routes.js';
 import insightsRoutes from './insights.routes.js';
 import inventoryRoutes from './inventory.routes.js';
@@ -58,6 +60,7 @@ router.get('/health', (_req, res) => {
 });
 
 router.use('/auth', authRoutes);
+router.use('/badges', badgesRoutes);
 router.use('/customers', customersRoutes);
 router.use('/products', productsRoutes);
 router.use('/inventory', inventoryRoutes);
