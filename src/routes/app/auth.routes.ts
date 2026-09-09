@@ -7,6 +7,11 @@ import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { authMiddleware } from '../../middleware/auth.js';
 import {
+  assertLoginNotLocked,
+  onLoginFailure,
+  onLoginSuccess,
+} from '../../middleware/login-rate-limit.js';
+import {
   deleteAuthSession,
   saveAuthSession,
 } from '../../services/auth-session.store.js';
@@ -32,6 +37,8 @@ const loginSchema = z.object({
 
 /** Sales-rep app login — same Odoo auth; Bearer JWT with sid (no Odoo cookie). */
 router.post('/login', async (req, res) => {
+  if (!(await assertLoginNotLocked(req, res))) return;
+
   const parsed = loginSchema.safeParse({
     email: typeof req.body?.email === 'string' ? req.body.email.trim() : req.body?.email,
     password:
@@ -96,6 +103,8 @@ router.post('/login', async (req, res) => {
       signOptions,
     );
 
+    await onLoginSuccess(req);
+
     return res.json({
       token,
       user: {
@@ -111,7 +120,10 @@ router.post('/login', async (req, res) => {
     const message =
       error instanceof Error ? error.message : 'Login failed. Please try again.';
     const status = /session store unavailable/i.test(message) ? 503 : 401;
-    return res.status(status).json({ message });
+    if (status === 503) {
+      return res.status(503).json({ message });
+    }
+    await onLoginFailure(req, res, message, status);
   }
 });
 
