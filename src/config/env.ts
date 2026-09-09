@@ -36,10 +36,43 @@ function buildCorsOrigins(): string[] {
 
 const corsOrigins = buildCorsOrigins();
 
+/** Comma-separated Vercel project hostname prefixes (e.g. my-app,my-app-git). */
+function vercelProjectPrefixes(): string[] {
+  return (process.env.CORS_VERCEL_PROJECT_PREFIXES ?? '')
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function allowAllVercelAppHosts(): boolean {
+  const flag = (process.env.CORS_ALLOW_ALL_VERCEL_APP ?? '').trim().toLowerCase();
+  return flag === 'true' || flag === '1' || flag === 'on';
+}
+
+function isAllowedVercelAppHost(hostname: string): boolean {
+  if (!hostname.endsWith('.vercel.app')) {
+    return false;
+  }
+  // Escape hatch for temporary preview chaos — avoid in steady production.
+  if (allowAllVercelAppHosts()) {
+    return true;
+  }
+  const prefixes = vercelProjectPrefixes();
+  if (prefixes.length === 0) {
+    return false;
+  }
+  const host = hostname.toLowerCase();
+  return prefixes.some(prefix => {
+    // Exact project host: prefix.vercel.app
+    if (host === `${prefix}.vercel.app`) return true;
+    // Preview hosts: prefix-git-..., prefix-....vercel.app
+    return host.startsWith(`${prefix}-`) && host.endsWith('.vercel.app');
+  });
+}
+
 /**
- * Allow listed origins, plus Vercel preview/production frontend URLs.
- * Preview deployments get unique hostnames; blocking them causes browser
- * "Failed to fetch" on login even when the API is healthy.
+ * Allow listed origins, production custom domains, and (optionally) your
+ * Vercel frontend project hosts via CORS_VERCEL_PROJECT_PREFIXES.
  */
 export function isAllowedCorsOrigin(origin: string | undefined): boolean {
   if (!origin) {
@@ -53,8 +86,7 @@ export function isAllowedCorsOrigin(origin: string | undefined): boolean {
     if (hostname === 'localhost' || hostname === '127.0.0.1') {
       return true;
     }
-    // Any Vercel frontend deployment (production + preview).
-    if (hostname.endsWith('.vercel.app')) {
+    if (isAllowedVercelAppHost(hostname)) {
       return true;
     }
     // Production custom domains for QR Shop website.

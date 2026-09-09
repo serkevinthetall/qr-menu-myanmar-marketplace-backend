@@ -13,4 +13,6 @@ export type AuthRequest = import('express').Request & {
   sessionId?: string;
   /** ISO expiry from JWT `exp` when present. */
   tokenExpiresAt?: string;
+  /** Which client issued this session (website vs sales app). */
+  authSurface?: 'web' | 'app';
 };

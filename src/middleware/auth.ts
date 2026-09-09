@@ -31,6 +31,12 @@ function isTokenInvalidatedByMassLogout(payload: JwtPayload): boolean {
   return payload.iat * 1000 < cutoffMs;
 }
 
+/** True for /api/app/* only (not /api/app-installs, etc.). */
+function isAppApiPath(req: AuthRequest): boolean {
+  const url = String(req.originalUrl || req.url || '');
+  return /\/api\/app(\/|\?|$)/.test(url);
+}
+
 export async function authMiddleware(
   req: AuthRequest,
   res: Response,
@@ -70,6 +76,20 @@ export async function authMiddleware(
       });
     }
 
+    const surface: 'web' | 'app' =
+      stored.surface === 'app' || payload.surface === 'app' ? 'app' : 'web';
+    const expectsApp = isAppApiPath(req);
+    if (expectsApp && surface !== 'app') {
+      return res.status(403).json({
+        message: 'Use the sales app login for this API.',
+      });
+    }
+    if (!expectsApp && surface !== 'web') {
+      return res.status(403).json({
+        message: 'Use the website login for this API.',
+      });
+    }
+
     const odooSession = authSessionToOdoo(stored);
     setOdooSession(payload.sub, odooSession);
 
@@ -80,6 +100,7 @@ export async function authMiddleware(
     };
     req.odooSession = odooSession;
     req.sessionId = payload.sid;
+    req.authSurface = surface;
     req.tokenExpiresAt =
       typeof payload.exp === 'number'
         ? new Date(payload.exp * 1000).toISOString()

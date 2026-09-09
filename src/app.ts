@@ -30,7 +30,7 @@ export function createApp() {
 
   app.use(
     cors({
-      // Dev: reflect any origin. Prod: CORS_ORIGINS + *.vercel.app frontends.
+      // Dev: reflect any origin. Prod: CORS_ORIGINS + custom domains + optional Vercel prefixes.
       origin: (origin, callback) => {
         if (env.nodeEnv === 'development' || isAllowedCorsOrigin(origin)) {
           callback(null, true);
