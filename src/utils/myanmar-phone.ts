@@ -48,7 +48,7 @@ export function validateMyanmarPhone(number: string, fieldName = 'Phone number')
 
   if (phone.startsWith('+95')) {
     throw new Error(
-      `${fieldName} must use Myanmar local format starting with 09, not +95.`,
+      `${fieldName} must use Myanmar local format starting with 01, 02, 05, 06, or 09 — not +95.`,
     );
   }
 
@@ -56,8 +56,10 @@ export function validateMyanmarPhone(number: string, fieldName = 'Phone number')
     throw new Error(`${fieldName} must contain digits only.`);
   }
 
-  if (!phone.startsWith('09')) {
-    throw new Error(`${fieldName} must start with 09.`);
+  if (!/^(01|02|05|06|09)/.test(phone)) {
+    throw new Error(
+      `${fieldName} must start with 01, 02, 05, 06, or 09.`,
+    );
   }
 
   if (phone.length < 8) {
