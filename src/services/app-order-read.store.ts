@@ -4,6 +4,9 @@ import path from 'node:path';
 import { Redis as UpstashRedis } from '@upstash/redis';
 import { createClient, type RedisClientType } from 'redis';
 
+import { connectMongo, isMongoConfigured } from '../config/mongo.js';
+import { AppOrderReadModel } from '../models/app-order-read.model.js';
+
 /**
  * Team-wide App Order read ids.
  *
@@ -11,10 +14,12 @@ import { createClient, type RedisClientType } from 'redis';
  * instances. Prefer:
  * 1) Upstash / Vercel KV REST (KV_* or UPSTASH_REDIS_REST_*)
  * 2) Redis Cloud TCP via REDIS_URL (Vercel Marketplace Redis)
- * 3) Local JSON file fallback (dev only)
+ * 3) MongoDB (MONGODB_URI) — durable fallback when Redis is down
+ * 4) Local JSON file fallback (dev only)
  */
 
 const REDIS_KEY = 'qr-shop:app-order-read-ids';
+const REDIS_RETRY_MS = 60_000;
 
 type ReadFile = {
   readOrderIds: number[];
@@ -25,19 +30,20 @@ type RedisBackend =
   | { kind: 'tcp'; client: RedisClientType };
 
 let redisBackend: RedisBackend | null | undefined;
-let warnedMissingRedis = false;
+let redisBackendCheckedAt = 0;
+let warnedMissingStore = false;
 let tcpConnectPromise: Promise<RedisClientType> | null = null;
 
-function warnMissingRedisInProduction() {
+function warnMissingStoreInProduction() {
   if (
-    !warnedMissingRedis &&
+    !warnedMissingStore &&
     (process.env.NODE_ENV ?? 'development') === 'production'
   ) {
-    warnedMissingRedis = true;
+    warnedMissingStore = true;
     console.warn(
-      '[app-order-read] Redis not configured. Set REDIS_URL ' +
-        '(Redis Cloud) or KV_REST_API_URL + KV_REST_API_TOKEN ' +
-        '(Upstash). Without this, read/unread resets across Vercel instances.',
+      '[app-order-read] No Redis/Mongo for read state. Set REDIS_URL ' +
+        '(or Upstash KV) and/or MONGODB_URI. Without this, unread badges ' +
+        'reset across Vercel instances and climb to 99+.',
     );
   }
 }
@@ -66,7 +72,6 @@ async function getTcpClient(): Promise<RedisClientType | null> {
       const client = createClient({
         url,
         socket: {
-          // Serverless: fail fast rather than hang a request.
           connectTimeout: 8_000,
           reconnectStrategy: retries => Math.min(retries * 200, 2_000),
         },
@@ -86,13 +91,20 @@ async function getTcpClient(): Promise<RedisClientType | null> {
 }
 
 async function getRedisBackend(): Promise<RedisBackend | null> {
-  if (redisBackend !== undefined) {
+  if (redisBackend) {
     return redisBackend;
+  }
+  if (
+    redisBackend === null &&
+    Date.now() - redisBackendCheckedAt < REDIS_RETRY_MS
+  ) {
+    return null;
   }
 
   const upstash = getUpstashClient();
   if (upstash) {
     redisBackend = { kind: 'upstash', client: upstash };
+    redisBackendCheckedAt = Date.now();
     return redisBackend;
   }
 
@@ -100,6 +112,7 @@ async function getRedisBackend(): Promise<RedisBackend | null> {
     const tcp = await getTcpClient();
     if (tcp) {
       redisBackend = { kind: 'tcp', client: tcp };
+      redisBackendCheckedAt = Date.now();
       return redisBackend;
     }
   } catch (error) {
@@ -108,11 +121,12 @@ async function getRedisBackend(): Promise<RedisBackend | null> {
       error instanceof Error ? error.message : error,
     );
     redisBackend = null;
+    redisBackendCheckedAt = Date.now();
     return null;
   }
 
   redisBackend = null;
-  warnMissingRedisInProduction();
+  redisBackendCheckedAt = Date.now();
   return null;
 }
 
@@ -149,6 +163,48 @@ async function setInRedis(
     await backend.client.sAdd(REDIS_KEY, member);
   } else {
     await backend.client.sRem(REDIS_KEY, member);
+  }
+}
+
+async function listFromMongo(): Promise<Set<number> | null> {
+  if (!isMongoConfigured()) return null;
+  try {
+    await connectMongo();
+    const rows = await AppOrderReadModel.find({}, { orderId: 1, _id: 0 })
+      .lean()
+      .exec();
+    return new Set(
+      normalizeIds(rows.map(row => (row as { orderId?: unknown }).orderId)),
+    );
+  } catch (error) {
+    console.error(
+      '[app-order-read] Mongo list failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
+}
+
+async function setInMongo(orderId: number, read: boolean): Promise<boolean> {
+  if (!isMongoConfigured()) return false;
+  try {
+    await connectMongo();
+    if (read) {
+      await AppOrderReadModel.updateOne(
+        { orderId },
+        { $set: { orderId, readAt: new Date() } },
+        { upsert: true },
+      );
+    } else {
+      await AppOrderReadModel.deleteOne({ orderId });
+    }
+    return true;
+  } catch (error) {
+    console.error(
+      '[app-order-read] Mongo write failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return false;
   }
 }
 
@@ -201,10 +257,39 @@ async function writeAllToFile(data: ReadFile): Promise<void> {
 
 /** Shared across all users/devices. */
 export async function listReadAppOrderIds(): Promise<Set<number>> {
-  const backend = await getRedisBackend();
-  if (backend) {
-    return listFromRedis(backend);
+  const merged = new Set<number>();
+  let redisListed = false;
+
+  try {
+    const backend = await getRedisBackend();
+    if (backend) {
+      const fromRedis = await listFromRedis(backend);
+      for (const id of fromRedis) merged.add(id);
+      redisListed = true;
+    }
+  } catch (error) {
+    console.error(
+      '[app-order-read] Redis list failed:',
+      error instanceof Error ? error.message : error,
+    );
+    redisBackend = null;
+    redisBackendCheckedAt = Date.now();
   }
+
+  const fromMongo = await listFromMongo();
+  if (fromMongo) {
+    for (const id of fromMongo) merged.add(id);
+  }
+
+  if (redisListed || fromMongo) {
+    return merged;
+  }
+
+  if ((process.env.NODE_ENV ?? 'development') === 'production') {
+    warnMissingStoreInProduction();
+    return new Set();
+  }
+
   const all = await readAllFromFile();
   return new Set(all.readOrderIds);
 }
@@ -221,10 +306,34 @@ export async function setAppOrderRead(
 ): Promise<void> {
   if (!Number.isFinite(orderId) || orderId <= 0) return;
 
-  const backend = await getRedisBackend();
-  if (backend) {
-    await setInRedis(backend, orderId, read);
+  let redisOk = false;
+  try {
+    const backend = await getRedisBackend();
+    if (backend) {
+      await setInRedis(backend, orderId, read);
+      redisOk = true;
+    }
+  } catch (error) {
+    console.error(
+      '[app-order-read] Redis write failed:',
+      error instanceof Error ? error.message : error,
+    );
+    redisBackend = null;
+    redisBackendCheckedAt = Date.now();
+  }
+
+  // Always mirror to Mongo when available so unread badges survive Redis blips.
+  const mongoOk = await setInMongo(orderId, read);
+
+  if (redisOk || mongoOk) {
     return;
+  }
+
+  if ((process.env.NODE_ENV ?? 'development') === 'production') {
+    warnMissingStoreInProduction();
+    throw new Error(
+      'App order read store unavailable. Configure REDIS_URL or MONGODB_URI.',
+    );
   }
 
   const all = await readAllFromFile();
