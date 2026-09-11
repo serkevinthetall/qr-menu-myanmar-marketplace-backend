@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import {
   listReadAppOrderIds,
   setAppOrderRead,
+  setAppOrderReadMany,
 } from '../services/app-order-read.store.js';
 import {
   fetchOdooOnlineOrderDetailBundle,
@@ -91,6 +92,47 @@ router.get('/', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load app orders.';
     console.error('[online-orders]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.put('/read-all', async (req: AuthRequest, res) => {
+  const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const ids = rawIds
+    .map((value: unknown) => Number(value))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+  const read = req.body?.read === undefined ? true : Boolean(req.body.read);
+
+  try {
+    // Empty ids → mark every currently loaded App Order window as read/unread.
+    let targetIds = ids;
+    if (targetIds.length === 0) {
+      const rows = await fetchOdooOnlineOrders(req.user!.id, {
+        limit: 500,
+        offset: 0,
+      });
+      targetIds = rows.map(row => row.id);
+    }
+
+    await setAppOrderReadMany(targetIds, read);
+    const readIds = await listReadAppOrderIds();
+    const unreadCount = (targetIds as number[]).reduce(
+      (count: number, id: number) => count + (readIds.has(id) ? 0 : 1),
+      0,
+    );
+
+    return res.json({
+      data: {
+        updated: targetIds.length,
+        read,
+        unreadCount,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to update read state.';
+    console.error('[online-orders] read-all', message);
     return res.status(500).json({ message });
   }
 });

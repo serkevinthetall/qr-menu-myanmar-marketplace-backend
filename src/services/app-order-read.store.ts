@@ -300,30 +300,88 @@ export async function isAppOrderRead(orderId: number): Promise<boolean> {
   return ids.has(orderId);
 }
 
-export async function setAppOrderRead(
-  orderId: number,
+async function setManyInRedis(
+  backend: RedisBackend,
+  orderIds: number[],
   read: boolean,
 ): Promise<void> {
-  if (!Number.isFinite(orderId) || orderId <= 0) return;
+  if (orderIds.length === 0) return;
+  const members = orderIds.map(id => String(id));
+  if (backend.kind === 'upstash') {
+    if (read) {
+      for (const member of members) {
+        await backend.client.sadd(REDIS_KEY, member);
+      }
+    } else {
+      for (const member of members) {
+        await backend.client.srem(REDIS_KEY, member);
+      }
+    }
+    return;
+  }
+  if (read) {
+    await backend.client.sAdd(REDIS_KEY, members);
+  } else {
+    await backend.client.sRem(REDIS_KEY, members);
+  }
+}
+
+async function setManyInMongo(
+  orderIds: number[],
+  read: boolean,
+): Promise<boolean> {
+  if (!isMongoConfigured() || orderIds.length === 0) return false;
+  try {
+    await connectMongo();
+    if (read) {
+      const now = new Date();
+      await AppOrderReadModel.bulkWrite(
+        orderIds.map(orderId => ({
+          updateOne: {
+            filter: { orderId },
+            update: { $set: { orderId, readAt: now } },
+            upsert: true,
+          },
+        })),
+        { ordered: false },
+      );
+    } else {
+      await AppOrderReadModel.deleteMany({ orderId: { $in: orderIds } });
+    }
+    return true;
+  } catch (error) {
+    console.error(
+      '[app-order-read] Mongo bulk write failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return false;
+  }
+}
+
+export async function setAppOrderReadMany(
+  orderIds: number[],
+  read: boolean,
+): Promise<void> {
+  const ids = normalizeIds(orderIds);
+  if (ids.length === 0) return;
 
   let redisOk = false;
   try {
     const backend = await getRedisBackend();
     if (backend) {
-      await setInRedis(backend, orderId, read);
+      await setManyInRedis(backend, ids, read);
       redisOk = true;
     }
   } catch (error) {
     console.error(
-      '[app-order-read] Redis write failed:',
+      '[app-order-read] Redis bulk write failed:',
       error instanceof Error ? error.message : error,
     );
     redisBackend = null;
     redisBackendCheckedAt = Date.now();
   }
 
-  // Always mirror to Mongo when available so unread badges survive Redis blips.
-  const mongoOk = await setInMongo(orderId, read);
+  const mongoOk = await setManyInMongo(ids, read);
 
   if (redisOk || mongoOk) {
     return;
@@ -338,10 +396,16 @@ export async function setAppOrderRead(
 
   const all = await readAllFromFile();
   const set = new Set(all.readOrderIds);
-  if (read) {
-    set.add(orderId);
-  } else {
-    set.delete(orderId);
+  for (const id of ids) {
+    if (read) set.add(id);
+    else set.delete(id);
   }
   await writeAllToFile({ readOrderIds: [...set].sort((a, b) => a - b) });
+}
+
+export async function setAppOrderRead(
+  orderId: number,
+  read: boolean,
+): Promise<void> {
+  await setAppOrderReadMany([orderId], read);
 }
