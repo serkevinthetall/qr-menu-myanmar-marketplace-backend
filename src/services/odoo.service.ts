@@ -2621,6 +2621,54 @@ export async function cancelOdooQuotation(
   return updated;
 }
 
+/**
+ * Confirm a quotation in Odoo (`action_confirm`) → Sales Order.
+ * Allowed for `draft` (Quotation) and `sent` (Quotation Sent).
+ */
+export async function confirmOdooQuotation(
+  userId: string,
+  quotationId: number,
+): Promise<OdooQuotationDetail> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const existing = await fetchOdooQuotationById(userId, quotationId);
+  if (!existing) {
+    throw new Error('Quotation not found.');
+  }
+
+  const state = String(existing.state || '');
+  if (state !== 'draft' && state !== 'sent') {
+    throw new Error(
+      'Only quotations in Quotation or Quotation Sent status can be confirmed.',
+    );
+  }
+
+  try {
+    await odooCallKw(session.cookie, 'sale.order', 'action_confirm', [
+      [quotationId],
+    ]);
+  } catch (cookieError) {
+    try {
+      await odooExecuteKw(session.uid, 'sale.order', 'action_confirm', [
+        [quotationId],
+      ]);
+    } catch {
+      throw cookieError instanceof Error
+        ? cookieError
+        : new Error('Failed to confirm quotation in Odoo.');
+    }
+  }
+
+  const updated = await fetchOdooQuotationById(userId, quotationId);
+  if (!updated) {
+    throw new Error('Quotation was confirmed but could not be reloaded.');
+  }
+  return updated;
+}
+
 export async function fetchOdooPaymentMethodLines(
   userId: string,
 ): Promise<{ id: number; name: string }[]> {

@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { authMiddleware } from '../../middleware/auth.js';
 import {
   cancelOdooQuotation,
+  confirmOdooQuotation,
   createOdooQuotation,
   fetchOdooPaymentMethodLines,
   fetchOdooQuotationById,
@@ -99,6 +100,33 @@ router.post('/:id/cancel', async (req: AuthRequest, res) => {
         ? 404
         : 500;
     console.error('[app/quotations/:id/cancel]', message);
+    return res.status(status).json({ message });
+  }
+});
+
+router.post('/:id/confirm', async (req: AuthRequest, res) => {
+  const quotationId = Number(req.params.id);
+  if (!Number.isFinite(quotationId) || quotationId <= 0) {
+    return res.status(400).json({ message: 'Invalid quotation id.' });
+  }
+
+  try {
+    await confirmOdooQuotation(req.user!.id, quotationId);
+    const bundle = await fetchOdooQuotationDetailBundle(req.user!.id, quotationId);
+    if (!bundle) {
+      return res.status(404).json({ message: 'Quotation not found after confirm.' });
+    }
+    return res.json({ data: mapQuotationDetail(bundle) });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to confirm quotation.';
+    const status =
+      /only quotations in quotation or quotation sent status/i.test(message)
+        ? 409
+        : /not found/i.test(message)
+          ? 404
+          : 500;
+    console.error('[app/quotations/:id/confirm]', message);
     return res.status(status).json({ message });
   }
 });
