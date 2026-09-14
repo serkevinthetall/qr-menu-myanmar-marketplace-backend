@@ -2669,6 +2669,367 @@ export async function confirmOdooQuotation(
   return updated;
 }
 
+const VALIDATABLE_PICKING_STATES = new Set([
+  'draft',
+  'waiting',
+  'confirmed',
+  'assigned',
+]);
+
+export type OdooStockPickingBrief = {
+  id: number;
+  name: string;
+  state: string;
+  picking_type_code?: string | false;
+};
+
+export function saleOrderHasValidatableDelivery(
+  pickings: OdooStockPickingBrief[],
+): boolean {
+  return pickings.some(p =>
+    VALIDATABLE_PICKING_STATES.has(String(p.state || '')),
+  );
+}
+
+/** Outgoing deliveries linked to a confirmed sale order. */
+export async function fetchOdooOutgoingPickingsForOrder(
+  userId: string,
+  saleOrderId: number,
+): Promise<OdooStockPickingBrief[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const fields = ['id', 'name', 'state', 'picking_type_code'];
+
+  try {
+    const bySaleId = await searchReadOdooRecords<OdooStockPickingBrief>(
+      session,
+      'stock.picking',
+      [
+        ['sale_id', '=', saleOrderId],
+        ['picking_type_code', '=', 'outgoing'],
+      ],
+      fields,
+      { order: 'id asc', limit: 50 },
+    );
+    if (bySaleId.length > 0) {
+      return bySaleId;
+    }
+  } catch {
+    // sale_id / picking_type_code may differ by Odoo version — fall through.
+  }
+
+  try {
+    const saleOrder = await readOdooRecordAsUser<{
+      picking_ids?: number[];
+    }>(session, 'sale.order', saleOrderId, ['picking_ids']);
+    const pickingIds = Array.isArray(saleOrder?.picking_ids)
+      ? saleOrder.picking_ids
+      : [];
+    if (pickingIds.length === 0) {
+      return [];
+    }
+
+    const rows = await searchReadOdooRecords<OdooStockPickingBrief>(
+      session,
+      'stock.picking',
+      [['id', 'in', pickingIds]],
+      fields,
+      { order: 'id asc', limit: 50 },
+    );
+
+    return rows.filter(row => {
+      const code = row.picking_type_code;
+      return !code || code === 'outgoing';
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function callPickingMethod(
+  session: { cookie: string; uid: number },
+  method: string,
+  args: unknown[],
+  kwargs: Record<string, unknown> = {},
+): Promise<unknown> {
+  try {
+    return await odooCallKw(session.cookie, 'stock.picking', method, args, kwargs);
+  } catch (cookieError) {
+    try {
+      return await odooExecuteKw(
+        session.uid,
+        'stock.picking',
+        method,
+        args,
+        kwargs,
+      );
+    } catch {
+      throw cookieError instanceof Error
+        ? cookieError
+        : new Error(`Failed to ${method} delivery in Odoo.`);
+    }
+  }
+}
+
+async function writeStockRecord(
+  session: { cookie: string; uid: number },
+  model: string,
+  recordId: number,
+  values: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await writeOdooRecord(session, model, recordId, values);
+  } catch {
+    await odooExecuteKw(session.uid, model, 'write', [[recordId], values]);
+  }
+}
+
+/** Fill done quantities so Validate can complete without the Odoo UI wizard. */
+async function fillPickingDoneQuantities(
+  session: { cookie: string; uid: number },
+  pickingId: number,
+): Promise<void> {
+  type MoveRow = {
+    id: number;
+    product_uom_qty?: number;
+    quantity?: number;
+    quantity_done?: number;
+  };
+
+  let moves: MoveRow[] = [];
+  try {
+    moves = await searchReadOdooRecords<MoveRow>(
+      session,
+      'stock.move',
+      [['picking_id', '=', pickingId]],
+      ['id', 'product_uom_qty', 'quantity', 'quantity_done'],
+      { limit: 500 },
+    );
+  } catch {
+    moves = await searchReadOdooRecords<MoveRow>(
+      session,
+      'stock.move',
+      [['picking_id', '=', pickingId]],
+      ['id', 'product_uom_qty', 'quantity_done'],
+      { limit: 500 },
+    );
+  }
+
+  for (const move of moves) {
+    const qty = Number(move.product_uom_qty);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      continue;
+    }
+    try {
+      await writeStockRecord(session, 'stock.move', move.id, { quantity: qty });
+    } catch {
+      try {
+        await writeStockRecord(session, 'stock.move', move.id, {
+          quantity_done: qty,
+        });
+      } catch {
+        // Move-line fallback below.
+      }
+    }
+  }
+
+  type MoveLineRow = {
+    id: number;
+    qty_done?: number;
+    quantity?: number;
+    product_uom_qty?: number;
+  };
+
+  try {
+    const lines = await searchReadOdooRecords<MoveLineRow>(
+      session,
+      'stock.move.line',
+      [['picking_id', '=', pickingId]],
+      ['id', 'qty_done', 'quantity', 'product_uom_qty'],
+      { limit: 500 },
+    );
+    for (const line of lines) {
+      const target =
+        Number(line.product_uom_qty) ||
+        Number(line.quantity) ||
+        Number(line.qty_done);
+      if (!Number.isFinite(target) || target <= 0) {
+        continue;
+      }
+      try {
+        await writeStockRecord(session, 'stock.move.line', line.id, {
+          qty_done: target,
+        });
+      } catch {
+        await writeStockRecord(session, 'stock.move.line', line.id, {
+          quantity: target,
+        });
+      }
+    }
+  } catch {
+    // Some databases only track qty on stock.move.
+  }
+}
+
+async function processStockValidateWizard(
+  session: { cookie: string; uid: number },
+  action: {
+    res_model?: string;
+    res_id?: number;
+    context?: Record<string, unknown>;
+  },
+): Promise<void> {
+  const model = String(action.res_model || '');
+  if (!model) {
+    return;
+  }
+
+  let wizardId = Number(action.res_id);
+  if (!Number.isFinite(wizardId) || wizardId <= 0) {
+    try {
+      wizardId = await odooCallKw<number>(
+        session.cookie,
+        model,
+        'create',
+        [{}],
+        { context: action.context ?? {} },
+      );
+    } catch {
+      wizardId = await odooExecuteKw<number>(
+        session.uid,
+        model,
+        'create',
+        [{}],
+        { context: action.context ?? {} },
+      );
+    }
+  }
+
+  const methods =
+    model === 'stock.backorder.confirmation'
+      ? ['process_cancel_backorder', 'process']
+      : ['process', 'action_confirm'];
+
+  let lastError: unknown;
+  for (const method of methods) {
+    try {
+      await odooCallKw(session.cookie, model, method, [[wizardId]]);
+      return;
+    } catch (error) {
+      lastError = error;
+      try {
+        await odooExecuteKw(session.uid, model, method, [[wizardId]]);
+        return;
+      } catch (execError) {
+        lastError = execError;
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Failed to complete delivery validation wizard in Odoo.');
+}
+
+async function validateOdooPicking(
+  session: { cookie: string; uid: number },
+  pickingId: number,
+): Promise<void> {
+  await fillPickingDoneQuantities(session, pickingId);
+
+  const result = await callPickingMethod(
+    session,
+    'button_validate',
+    [[pickingId]],
+    {
+      context: {
+        skip_sms: true,
+        skip_immediate: true,
+        skip_backorder: true,
+      },
+    },
+  );
+
+  if (result === true || result === false || result == null) {
+    return;
+  }
+
+  if (typeof result === 'object') {
+    await processStockValidateWizard(
+      session,
+      result as {
+        res_model?: string;
+        res_id?: number;
+        context?: Record<string, unknown>;
+      },
+    );
+  }
+}
+
+/**
+ * Validate outgoing delivery(s) for a confirmed sale order
+ * (`stock.picking` → `button_validate`).
+ */
+export async function validateOdooSaleOrderDelivery(
+  userId: string,
+  saleOrderId: number,
+): Promise<{
+  saleOrder: OdooSaleOrderDetail;
+  lines: OdooSaleOrderLine[];
+  pickings: OdooStockPickingBrief[];
+}> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const existing = await fetchOdooSaleOrderById(userId, saleOrderId);
+  if (!existing) {
+    throw new Error('Sale order not found.');
+  }
+
+  const state = String(existing.state || '');
+  if (state !== 'sale' && state !== 'done') {
+    throw new Error(
+      'Only confirmed sales orders can have their delivery validated.',
+    );
+  }
+
+  const pickings = await fetchOdooOutgoingPickingsForOrder(userId, saleOrderId);
+  const pending = pickings.filter(p =>
+    VALIDATABLE_PICKING_STATES.has(String(p.state || '')),
+  );
+
+  if (pending.length === 0) {
+    if (pickings.length > 0 && pickings.every(p => String(p.state) === 'done')) {
+      throw new Error('Delivery is already validated.');
+    }
+    throw new Error('No delivery is ready to validate for this order.');
+  }
+
+  for (const picking of pending) {
+    await validateOdooPicking(session, picking.id);
+  }
+
+  const bundle = await fetchOdooSaleOrderDetailBundle(userId, saleOrderId);
+  if (!bundle) {
+    throw new Error('Delivery was validated but the sale order could not be reloaded.');
+  }
+
+  const refreshedPickings = await fetchOdooOutgoingPickingsForOrder(
+    userId,
+    saleOrderId,
+  );
+
+  return {
+    ...bundle,
+    pickings: refreshedPickings,
+  };
+}
+
 export async function fetchOdooPaymentMethodLines(
   userId: string,
 ): Promise<{ id: number; name: string }[]> {

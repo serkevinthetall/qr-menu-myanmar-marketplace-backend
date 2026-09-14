@@ -5,10 +5,13 @@ import {
   cancelOdooQuotation,
   confirmOdooQuotation,
   createOdooQuotation,
+  fetchOdooOutgoingPickingsForOrder,
   fetchOdooPaymentMethodLines,
   fetchOdooQuotationById,
   fetchOdooQuotationDetailBundle,
   fetchOdooQuotations,
+  saleOrderHasValidatableDelivery,
+  validateOdooSaleOrderDelivery,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 import { httpStatusForCaughtError } from '../utils/odoo-session-error.js';
@@ -222,7 +225,16 @@ router.get('/:id', async (req: AuthRequest, res) => {
       return res.status(404).json({ message: 'Quotation not found.' });
     }
 
-    return res.json({ data: mapQuotationDetail(bundle) });
+    const pickings = await fetchOdooOutgoingPickingsForOrder(
+      req.user!.id,
+      quotationId,
+    );
+    return res.json({
+      data: {
+        ...mapQuotationDetail(bundle),
+        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load quotation.';
@@ -247,7 +259,16 @@ router.post('/:id/cancel', async (req: AuthRequest, res) => {
     if (!bundle) {
       return res.status(404).json({ message: 'Quotation not found after cancel.' });
     }
-    return res.json({ data: mapQuotationDetail(bundle) });
+    const pickings = await fetchOdooOutgoingPickingsForOrder(
+      req.user!.id,
+      quotationId,
+    );
+    return res.json({
+      data: {
+        ...mapQuotationDetail(bundle),
+        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to cancel quotation.';
@@ -277,7 +298,16 @@ router.post('/:id/confirm', async (req: AuthRequest, res) => {
     if (!bundle) {
       return res.status(404).json({ message: 'Quotation not found after confirm.' });
     }
-    return res.json({ data: mapQuotationDetail(bundle) });
+    const pickings = await fetchOdooOutgoingPickingsForOrder(
+      req.user!.id,
+      quotationId,
+    );
+    return res.json({
+      data: {
+        ...mapQuotationDetail(bundle),
+        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to confirm quotation.';
@@ -288,6 +318,52 @@ router.post('/:id/confirm', async (req: AuthRequest, res) => {
           ? 404
           : 500;
     console.error('[quotations] Failed to confirm quotation:', message);
+    return res.status(status).json({ message });
+  }
+});
+
+router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
+  const quotationId = Number(req.params.id);
+
+  if (!Number.isFinite(quotationId) || quotationId <= 0) {
+    return res.status(400).json({ message: 'Invalid quotation id.' });
+  }
+
+  try {
+    await validateOdooSaleOrderDelivery(req.user!.id, quotationId);
+    const bundle = await fetchOdooQuotationDetailBundle(
+      req.user!.id,
+      quotationId,
+    );
+    if (!bundle) {
+      return res.status(404).json({
+        message: 'Quotation not found after delivery validate.',
+      });
+    }
+    const pickings = await fetchOdooOutgoingPickingsForOrder(
+      req.user!.id,
+      quotationId,
+    );
+    return res.json({
+      data: {
+        ...mapQuotationDetail(bundle),
+        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to validate delivery.';
+    const status =
+      /already validated|no delivery is ready|only confirmed sales orders/i.test(
+        message,
+      )
+        ? 409
+        : /not found/i.test(message)
+          ? 404
+          : 500;
+    console.error('[quotations] Failed to validate delivery:', message);
     return res.status(status).json({ message });
   }
 });

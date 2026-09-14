@@ -2,8 +2,11 @@ import { Router } from 'express';
 
 import { authMiddleware } from '../middleware/auth.js';
 import {
+  fetchOdooOutgoingPickingsForOrder,
   fetchOdooSaleOrderDetailBundle,
   fetchOdooSaleOrders,
+  saleOrderHasValidatableDelivery,
+  validateOdooSaleOrderDelivery,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 import {
@@ -63,14 +66,56 @@ router.get('/:id', async (req: AuthRequest, res) => {
       return res.status(404).json({ message: 'Sale order not found.' });
     }
 
+    const pickings = await fetchOdooOutgoingPickingsForOrder(
+      req.user!.id,
+      saleOrderId,
+    );
     return res.json({
-      data: mapSaleOrderDetail(bundle),
+      data: {
+        ...mapSaleOrderDetail(bundle),
+        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+      },
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load sale order.';
     console.error('[sale-orders]', message);
     return res.status(500).json({ message });
+  }
+});
+
+router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
+  const saleOrderId = Number(req.params.id);
+  if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
+    return res.status(400).json({ message: 'Invalid sale order id.' });
+  }
+
+  try {
+    const result = await validateOdooSaleOrderDelivery(
+      req.user!.id,
+      saleOrderId,
+    );
+    return res.json({
+      data: {
+        ...mapSaleOrderDetail(result),
+        canValidateDelivery: saleOrderHasValidatableDelivery(result.pickings),
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to validate delivery.';
+    const status =
+      /already validated|no delivery is ready|only confirmed sales orders/i.test(
+        message,
+      )
+        ? 409
+        : /not found/i.test(message)
+          ? 404
+          : 500;
+    console.error('[sale-orders] validate-delivery', message);
+    return res.status(status).json({ message });
   }
 });
 

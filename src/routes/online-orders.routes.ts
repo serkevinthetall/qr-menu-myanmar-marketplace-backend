@@ -9,6 +9,9 @@ import {
 import {
   fetchOdooOnlineOrderDetailBundle,
   fetchOdooOnlineOrders,
+  fetchOdooOutgoingPickingsForOrder,
+  saleOrderHasValidatableDelivery,
+  validateOdooSaleOrderDelivery,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 import {
@@ -184,15 +187,67 @@ router.get('/:id', async (req: AuthRequest, res) => {
     // Opening detail marks the order read for the whole team.
     await setAppOrderRead(saleOrderId, true);
     const detail = mapSaleOrderDetail(bundle);
+    const pickings = await fetchOdooOutgoingPickingsForOrder(
+      req.user!.id,
+      saleOrderId,
+    );
 
     return res.json({
-      data: { ...detail, unread: false },
+      data: {
+        ...detail,
+        unread: false,
+        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+      },
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load app order.';
     console.error('[online-orders]', message);
     return res.status(500).json({ message });
+  }
+});
+
+router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
+  const saleOrderId = Number(req.params.id);
+  if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
+    return res.status(400).json({ message: 'Invalid app order id.' });
+  }
+
+  try {
+    const bundle = await fetchOdooOnlineOrderDetailBundle(
+      req.user!.id,
+      saleOrderId,
+    );
+    if (!bundle) {
+      return res.status(404).json({ message: 'App order not found.' });
+    }
+
+    const result = await validateOdooSaleOrderDelivery(
+      req.user!.id,
+      saleOrderId,
+    );
+    return res.json({
+      data: {
+        ...mapSaleOrderDetail(result),
+        unread: false,
+        canValidateDelivery: saleOrderHasValidatableDelivery(result.pickings),
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to validate delivery.';
+    const status =
+      /already validated|no delivery is ready|only confirmed sales orders/i.test(
+        message,
+      )
+        ? 409
+        : /not found/i.test(message)
+          ? 404
+          : 500;
+    console.error('[online-orders] validate-delivery', message);
+    return res.status(status).json({ message });
   }
 });
 
