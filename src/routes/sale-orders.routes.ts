@@ -2,10 +2,12 @@ import { Router } from 'express';
 
 import { authMiddleware } from '../middleware/auth.js';
 import {
-  fetchOdooOutgoingPickingsForOrder,
+  createOdooSaleOrderInvoice,
+  enrichSaleOrderActionFlags,
+  fetchOdooDeliveryPreviewsForOrder,
   fetchOdooSaleOrderDetailBundle,
   fetchOdooSaleOrders,
-  saleOrderHasValidatableDelivery,
+  payOdooSaleOrderInvoice,
   validateOdooSaleOrderDelivery,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
@@ -66,20 +68,46 @@ router.get('/:id', async (req: AuthRequest, res) => {
       return res.status(404).json({ message: 'Sale order not found.' });
     }
 
-    const pickings = await fetchOdooOutgoingPickingsForOrder(
+    const flags = await enrichSaleOrderActionFlags(
       req.user!.id,
       saleOrderId,
+      bundle.saleOrder,
     );
     return res.json({
       data: {
         ...mapSaleOrderDetail(bundle),
-        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
       },
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load sale order.';
     console.error('[sale-orders]', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.get('/:id/deliveries', async (req: AuthRequest, res) => {
+  const saleOrderId = Number(req.params.id);
+  if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
+    return res.status(400).json({ message: 'Invalid sale order id.' });
+  }
+
+  try {
+    const data = await fetchOdooDeliveryPreviewsForOrder(
+      req.user!.id,
+      saleOrderId,
+    );
+    return res.json({ data });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to load delivery preview.';
+    console.error('[sale-orders] deliveries', message);
     return res.status(500).json({ message });
   }
 });
@@ -95,10 +123,18 @@ router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
       req.user!.id,
       saleOrderId,
     );
+    const flags = await enrichSaleOrderActionFlags(
+      req.user!.id,
+      saleOrderId,
+      result.saleOrder,
+    );
     return res.json({
       data: {
         ...mapSaleOrderDetail(result),
-        canValidateDelivery: saleOrderHasValidatableDelivery(result.pickings),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
       },
     });
   } catch (error) {
@@ -115,6 +151,93 @@ router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
           ? 404
           : 500;
     console.error('[sale-orders] validate-delivery', message);
+    return res.status(status).json({ message });
+  }
+});
+
+router.post('/:id/create-invoice', async (req: AuthRequest, res) => {
+  const saleOrderId = Number(req.params.id);
+  if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
+    return res.status(400).json({ message: 'Invalid sale order id.' });
+  }
+
+  try {
+    const result = await createOdooSaleOrderInvoice(req.user!.id, saleOrderId);
+    const flags = await enrichSaleOrderActionFlags(
+      req.user!.id,
+      saleOrderId,
+      result.saleOrder,
+    );
+    return res.json({
+      data: {
+        ...mapSaleOrderDetail(result),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
+        invoiceName: result.invoiceName,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to create invoice.';
+    const status =
+      /already fully invoiced|not ready to invoice|nothing to invoice|only confirmed sales orders/i.test(
+        message,
+      )
+        ? 409
+        : /not found/i.test(message)
+          ? 404
+          : 500;
+    console.error('[sale-orders] create-invoice', message);
+    return res.status(status).json({ message });
+  }
+});
+
+router.post('/:id/pay', async (req: AuthRequest, res) => {
+  const saleOrderId = Number(req.params.id);
+  if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
+    return res.status(400).json({ message: 'Invalid sale order id.' });
+  }
+
+  const paymentMethodLineIdRaw = Number(
+    (req.body as { paymentMethodLineId?: unknown })?.paymentMethodLineId,
+  );
+  const paymentMethodLineId =
+    Number.isFinite(paymentMethodLineIdRaw) && paymentMethodLineIdRaw > 0
+      ? paymentMethodLineIdRaw
+      : undefined;
+
+  try {
+    const result = await payOdooSaleOrderInvoice(req.user!.id, saleOrderId, {
+      paymentMethodLineId,
+    });
+    const flags = await enrichSaleOrderActionFlags(
+      req.user!.id,
+      saleOrderId,
+      result.saleOrder,
+    );
+    return res.json({
+      data: {
+        ...mapSaleOrderDetail(result),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
+        invoiceName: result.invoiceName,
+        paymentLabel: result.paymentLabel,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to register payment.';
+    const status =
+      /no unpaid invoice|only confirmed sales orders/i.test(message)
+        ? 409
+        : /not found/i.test(message)
+          ? 404
+          : 500;
+    console.error('[sale-orders] pay', message);
     return res.status(status).json({ message });
   }
 });

@@ -1711,6 +1711,7 @@ export type OdooQuotationDetail = OdooQuotation & {
   x_studio_delivery_notes: string | false;
   x_studio_sale_person_name: string | false;
   commitment_date: string | false;
+  invoice_status?: string | false;
 };
 
 export type OdooPartnerAddress = {
@@ -1775,6 +1776,7 @@ const QUOTATION_DETAIL_FIELDS = [
   'x_studio_preferred_delivery_date',
   'x_studio_delivery_notes',
   'commitment_date',
+  'invoice_status',
 ];
 
 const ORDER_LINE_FIELDS = [
@@ -2685,7 +2687,50 @@ export type OdooStockPickingBrief = {
   name: string;
   state: string;
   picking_type_code?: string | false;
+  scheduled_date?: string | false;
+  date_done?: string | false;
+  partner_id?: [number, string] | false;
+  origin?: string | false;
 };
+
+export type DeliveryPreviewLine = {
+  id: string;
+  product: string;
+  demand: number;
+  quantity: number;
+  unit: string;
+};
+
+export type DeliveryPreview = {
+  id: string;
+  name: string;
+  state: string;
+  stateLabel: string;
+  scheduledDate: string;
+  effectiveDate: string;
+  partner: string;
+  origin: string;
+  canValidate: boolean;
+  lines: DeliveryPreviewLine[];
+};
+
+function pickingStateLabel(state: string): string {
+  switch (state) {
+    case 'draft':
+      return 'Draft';
+    case 'waiting':
+    case 'confirmed':
+      return 'Waiting';
+    case 'assigned':
+      return 'Ready';
+    case 'done':
+      return 'Done';
+    case 'cancel':
+      return 'Cancelled';
+    default:
+      return state || '—';
+  }
+}
 
 export function saleOrderHasValidatableDelivery(
   pickings: OdooStockPickingBrief[],
@@ -2705,7 +2750,16 @@ export async function fetchOdooOutgoingPickingsForOrder(
     throw new Error('Odoo session expired. Please log in again.');
   }
 
-  const fields = ['id', 'name', 'state', 'picking_type_code'];
+  const fields = [
+    'id',
+    'name',
+    'state',
+    'picking_type_code',
+    'scheduled_date',
+    'date_done',
+    'partner_id',
+    'origin',
+  ];
 
   try {
     const bySaleId = await searchReadOdooRecords<OdooStockPickingBrief>(
@@ -2751,6 +2805,153 @@ export async function fetchOdooOutgoingPickingsForOrder(
   } catch {
     return [];
   }
+}
+
+type OdooStockMoveRow = {
+  id: number;
+  name?: string | false;
+  picking_id?: [number, string] | false;
+  product_id?: [number, string] | false;
+  product_uom_qty?: number;
+  quantity?: number;
+  quantity_done?: number;
+  product_uom?: [number, string] | false;
+};
+
+async function fetchOdooMovesForPickings(
+  session: { cookie: string; uid: number },
+  pickingIds: number[],
+): Promise<Map<number, OdooStockMoveRow[]>> {
+  const byPicking = new Map<number, OdooStockMoveRow[]>();
+  if (pickingIds.length === 0) {
+    return byPicking;
+  }
+
+  const baseFields = [
+    'id',
+    'name',
+    'picking_id',
+    'product_id',
+    'product_uom_qty',
+    'product_uom',
+  ];
+
+  let rows: OdooStockMoveRow[] = [];
+  // Odoo 17+ uses `quantity`; older versions use `quantity_done`.
+  // Never request both — unknown fields make the whole read fail.
+  try {
+    rows = await searchReadOdooRecords<OdooStockMoveRow>(
+      session,
+      'stock.move',
+      [['picking_id', 'in', pickingIds]],
+      [...baseFields, 'quantity'],
+      { order: 'id asc', limit: 2000 },
+    );
+  } catch {
+    try {
+      rows = await searchReadOdooRecords<OdooStockMoveRow>(
+        session,
+        'stock.move',
+        [['picking_id', 'in', pickingIds]],
+        [...baseFields, 'quantity_done'],
+        { order: 'id asc', limit: 2000 },
+      );
+    } catch {
+      try {
+        rows = await searchReadOdooRecords<OdooStockMoveRow>(
+          session,
+          'stock.move',
+          [['picking_id', 'in', pickingIds]],
+          baseFields,
+          { order: 'id asc', limit: 2000 },
+        );
+      } catch {
+        return byPicking;
+      }
+    }
+  }
+
+  for (const row of rows) {
+    const pickingId = odooRelationId(row.picking_id);
+    if (!pickingId) {
+      continue;
+    }
+    const list = byPicking.get(pickingId) ?? [];
+    list.push(row);
+    byPicking.set(pickingId, list);
+  }
+
+  return byPicking;
+}
+
+function mapDeliveryPreviewLine(move: OdooStockMoveRow): DeliveryPreviewLine {
+  const demand = Number(move.product_uom_qty);
+  const doneQty = Number(move.quantity);
+  const legacyDone = Number(move.quantity_done);
+  const quantity = Number.isFinite(doneQty) && doneQty > 0
+    ? doneQty
+    : Number.isFinite(legacyDone) && legacyDone > 0
+      ? legacyDone
+      : Number.isFinite(demand)
+        ? demand
+        : 0;
+
+  return {
+    id: String(move.id),
+    product:
+      odooRelationLabel(move.product_id) ||
+      odooString(move.name) ||
+      '—',
+    demand: Number.isFinite(demand) ? demand : 0,
+    quantity,
+    unit: odooRelationLabel(move.product_uom) || 'Units',
+  };
+}
+
+function mapDeliveryPreview(
+  picking: OdooStockPickingBrief,
+  moves: OdooStockMoveRow[],
+): DeliveryPreview {
+  const state = String(picking.state || '');
+  return {
+    id: String(picking.id),
+    name: odooString(picking.name) || `Picking ${picking.id}`,
+    state,
+    stateLabel: pickingStateLabel(state),
+    scheduledDate: odooString(picking.scheduled_date),
+    effectiveDate: odooString(picking.date_done),
+    partner: odooRelationLabel(picking.partner_id),
+    origin: odooString(picking.origin),
+    canValidate: VALIDATABLE_PICKING_STATES.has(state),
+    lines: moves.map(mapDeliveryPreviewLine),
+  };
+}
+
+/**
+ * Odoo-style delivery preview for a sale order: pickings + Demand/Qty lines.
+ */
+export async function fetchOdooDeliveryPreviewsForOrder(
+  userId: string,
+  saleOrderId: number,
+): Promise<DeliveryPreview[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const pickings = await fetchOdooOutgoingPickingsForOrder(userId, saleOrderId);
+  if (pickings.length === 0) {
+    return [];
+  }
+
+  const movesByPicking = await fetchOdooMovesForPickings(
+    session,
+    pickings.map(p => p.id),
+  );
+
+  return pickings.map(picking =>
+    mapDeliveryPreview(picking, movesByPicking.get(picking.id) ?? []),
+  );
 }
 
 async function callPickingMethod(
@@ -2804,22 +3005,33 @@ async function fillPickingDoneQuantities(
   };
 
   let moves: MoveRow[] = [];
+  // Odoo 17+ uses `quantity`; older versions use `quantity_done`.
   try {
     moves = await searchReadOdooRecords<MoveRow>(
       session,
       'stock.move',
       [['picking_id', '=', pickingId]],
-      ['id', 'product_uom_qty', 'quantity', 'quantity_done'],
+      ['id', 'product_uom_qty', 'quantity'],
       { limit: 500 },
     );
   } catch {
-    moves = await searchReadOdooRecords<MoveRow>(
-      session,
-      'stock.move',
-      [['picking_id', '=', pickingId]],
-      ['id', 'product_uom_qty', 'quantity_done'],
-      { limit: 500 },
-    );
+    try {
+      moves = await searchReadOdooRecords<MoveRow>(
+        session,
+        'stock.move',
+        [['picking_id', '=', pickingId]],
+        ['id', 'product_uom_qty', 'quantity_done'],
+        { limit: 500 },
+      );
+    } catch {
+      moves = await searchReadOdooRecords<MoveRow>(
+        session,
+        'stock.move',
+        [['picking_id', '=', pickingId]],
+        ['id', 'product_uom_qty'],
+        { limit: 500 },
+      );
+    }
   }
 
   for (const move of moves) {
@@ -3031,6 +3243,489 @@ export async function validateOdooSaleOrderDelivery(
   return {
     ...bundle,
     pickings: refreshedPickings,
+  };
+}
+
+export function saleOrderCanCreateInvoice(order: {
+  state?: string;
+  invoice_status?: string | false;
+}): boolean {
+  const state = String(order.state || '');
+  const invoiceStatus = String(order.invoice_status || '');
+  return (
+    (state === 'sale' || state === 'done') && invoiceStatus === 'to invoice'
+  );
+}
+
+async function createInvoicesViaAdvanceWizard(
+  session: { cookie: string; uid: number },
+  saleOrderId: number,
+): Promise<void> {
+  const context = {
+    active_model: 'sale.order',
+    active_ids: [saleOrderId],
+    active_id: saleOrderId,
+  };
+
+  let wizardId: number;
+  try {
+    wizardId = await odooCallKw<number>(
+      session.cookie,
+      'sale.advance.payment.inv',
+      'create',
+      [{ advance_payment_method: 'delivered' }],
+      { context },
+    );
+  } catch {
+    wizardId = await odooExecuteKw<number>(
+      session.uid,
+      'sale.advance.payment.inv',
+      'create',
+      [{ advance_payment_method: 'delivered' }],
+      { context },
+    );
+  }
+
+  try {
+    await odooCallKw(
+      session.cookie,
+      'sale.advance.payment.inv',
+      'create_invoices',
+      [[wizardId]],
+      { context },
+    );
+  } catch (cookieError) {
+    try {
+      await odooExecuteKw(
+        session.uid,
+        'sale.advance.payment.inv',
+        'create_invoices',
+        [[wizardId]],
+        { context },
+      );
+    } catch {
+      throw cookieError instanceof Error
+        ? cookieError
+        : new Error('Failed to create invoice in Odoo.');
+    }
+  }
+}
+
+/**
+ * Create customer invoice(s) for a confirmed sale order
+ * (`sale.order` → `_create_invoices` / `sale.advance.payment.inv`).
+ */
+export async function createOdooSaleOrderInvoice(
+  userId: string,
+  saleOrderId: number,
+): Promise<{
+  saleOrder: OdooSaleOrderDetail;
+  lines: OdooSaleOrderLine[];
+  pickings: OdooStockPickingBrief[];
+  invoiceName: string;
+}> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const existing = await fetchOdooSaleOrderById(userId, saleOrderId);
+  if (!existing) {
+    throw new Error('Sale order not found.');
+  }
+
+  const state = String(existing.state || '');
+  if (state !== 'sale' && state !== 'done') {
+    throw new Error('Only confirmed sales orders can be invoiced.');
+  }
+
+  if (!saleOrderCanCreateInvoice(existing)) {
+    const invoiceStatus = String(existing.invoice_status || '');
+    if (invoiceStatus === 'invoiced') {
+      throw new Error('This order is already fully invoiced.');
+    }
+    if (invoiceStatus === 'no') {
+      throw new Error('Nothing to invoice on this order.');
+    }
+    throw new Error('This order is not ready to invoice yet.');
+  }
+
+  let createError: unknown;
+  try {
+    await odooCallKw(session.cookie, 'sale.order', '_create_invoices', [
+      [saleOrderId],
+    ]);
+  } catch (directError) {
+    createError = directError;
+    try {
+      await odooExecuteKw(session.uid, 'sale.order', '_create_invoices', [
+        [saleOrderId],
+      ]);
+      createError = undefined;
+    } catch {
+      try {
+        await createInvoicesViaAdvanceWizard(session, saleOrderId);
+        createError = undefined;
+      } catch (wizardError) {
+        createError = wizardError ?? directError;
+      }
+    }
+  }
+
+  if (createError) {
+    throw createError instanceof Error
+      ? createError
+      : new Error('Failed to create invoice in Odoo.');
+  }
+
+  const bundle = await fetchOdooSaleOrderDetailBundle(userId, saleOrderId);
+  if (!bundle) {
+    throw new Error('Invoice was created but the sale order could not be reloaded.');
+  }
+
+  const pickings = await fetchOdooOutgoingPickingsForOrder(userId, saleOrderId);
+
+  let invoiceName = '';
+  try {
+    const invoices = await searchReadOdooRecords<{
+      id: number;
+      name: string | false;
+    }>(
+      session,
+      'account.move',
+      [
+        ['invoice_origin', '=', odooString(existing.name)],
+        ['move_type', '=', 'out_invoice'],
+      ],
+      ['id', 'name'],
+      { order: 'id desc', limit: 5 },
+    );
+    invoiceName = invoices
+      .map(row => odooString(row.name))
+      .filter(Boolean)
+      .join(', ');
+  } catch {
+    // Name is optional for the UI snackbar.
+  }
+
+  return {
+    ...bundle,
+    pickings,
+    invoiceName,
+  };
+}
+
+export type PayableInvoice = {
+  id: string;
+  name: string;
+  amountResidual: number;
+  amountTotal: number;
+  currency: string;
+  state: string;
+  paymentState: string;
+};
+
+type OdooInvoiceRow = {
+  id: number;
+  name?: string | false;
+  state?: string;
+  payment_state?: string | false;
+  amount_residual?: number;
+  amount_total?: number;
+  currency_id?: [number, string] | false;
+};
+
+/** Open customer invoices for a sale order (amount still due). */
+export async function fetchOdooPayableInvoicesForOrder(
+  userId: string,
+  saleOrderId: number,
+  options?: { orderName?: string },
+): Promise<PayableInvoice[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  let orderName = options?.orderName?.trim() || '';
+  let invoiceIds: number[] = [];
+
+  try {
+    const saleOrder = await readOdooRecordAsUser<{
+      name?: string | false;
+      invoice_ids?: number[];
+    }>(session, 'sale.order', saleOrderId, ['name', 'invoice_ids']);
+    if (saleOrder) {
+      orderName = orderName || odooString(saleOrder.name);
+      invoiceIds = Array.isArray(saleOrder.invoice_ids)
+        ? saleOrder.invoice_ids
+        : [];
+    }
+  } catch {
+    // Fall through to origin search.
+  }
+
+  const fields = [
+    'id',
+    'name',
+    'state',
+    'payment_state',
+    'amount_residual',
+    'amount_total',
+    'currency_id',
+  ];
+
+  let rows: OdooInvoiceRow[] = [];
+  try {
+    if (invoiceIds.length > 0) {
+      rows = await searchReadOdooRecords<OdooInvoiceRow>(
+        session,
+        'account.move',
+        [
+          ['id', 'in', invoiceIds],
+          ['move_type', '=', 'out_invoice'],
+        ],
+        fields,
+        { order: 'id asc', limit: 50 },
+      );
+    } else if (orderName) {
+      rows = await searchReadOdooRecords<OdooInvoiceRow>(
+        session,
+        'account.move',
+        [
+          ['invoice_origin', '=', orderName],
+          ['move_type', '=', 'out_invoice'],
+        ],
+        fields,
+        { order: 'id asc', limit: 50 },
+      );
+    }
+  } catch {
+    return [];
+  }
+
+  return rows
+    .filter(row => {
+      if (String(row.state || '') === 'cancel') {
+        return false;
+      }
+      const residual = Number(row.amount_residual);
+      return Number.isFinite(residual) && residual > 0.0001;
+    })
+    .map(row => ({
+      id: String(row.id),
+      name: odooString(row.name) || `Invoice ${row.id}`,
+      amountResidual: Number(row.amount_residual) || 0,
+      amountTotal: Number(row.amount_total) || 0,
+      currency: odooRelationLabel(row.currency_id),
+      state: String(row.state || ''),
+      paymentState: odooString(row.payment_state),
+    }));
+}
+
+export function saleOrderCanPayInvoice(invoices: PayableInvoice[]): boolean {
+  return invoices.length > 0;
+}
+
+export async function enrichSaleOrderActionFlags(
+  userId: string,
+  saleOrderId: number,
+  saleOrder: {
+    state?: string;
+    invoice_status?: string | false;
+    name?: string | false;
+  },
+): Promise<{
+  canValidateDelivery: boolean;
+  canCreateInvoice: boolean;
+  canPayInvoice: boolean;
+  payableInvoice?: {
+    id: string;
+    name: string;
+    amountResidual: number;
+    currency: string;
+  };
+  pickings: OdooStockPickingBrief[];
+}> {
+  const [pickings, payable] = await Promise.all([
+    fetchOdooOutgoingPickingsForOrder(userId, saleOrderId),
+    fetchOdooPayableInvoicesForOrder(userId, saleOrderId, {
+      orderName: odooString(saleOrder.name),
+    }),
+  ]);
+
+  const first = payable[0];
+  return {
+    canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+    canCreateInvoice: saleOrderCanCreateInvoice(saleOrder),
+    canPayInvoice: saleOrderCanPayInvoice(payable),
+    payableInvoice: first
+      ? {
+          id: first.id,
+          name: first.name,
+          amountResidual: first.amountResidual,
+          currency: first.currency,
+        }
+      : undefined,
+    pickings,
+  };
+}
+
+async function postOdooInvoiceIfDraft(
+  session: { cookie: string; uid: number },
+  invoiceId: number,
+): Promise<void> {
+  try {
+    await odooCallKw(session.cookie, 'account.move', 'action_post', [
+      [invoiceId],
+    ]);
+  } catch (cookieError) {
+    try {
+      await odooExecuteKw(session.uid, 'account.move', 'action_post', [
+        [invoiceId],
+      ]);
+    } catch {
+      throw cookieError instanceof Error
+        ? cookieError
+        : new Error('Failed to post invoice in Odoo.');
+    }
+  }
+}
+
+/**
+ * Post unpaid invoices (if draft) and register full payment
+ * via `account.payment.register`.
+ */
+export async function payOdooSaleOrderInvoice(
+  userId: string,
+  saleOrderId: number,
+  options?: { paymentMethodLineId?: number },
+): Promise<{
+  saleOrder: OdooSaleOrderDetail;
+  lines: OdooSaleOrderLine[];
+  pickings: OdooStockPickingBrief[];
+  paymentLabel: string;
+  invoiceName: string;
+}> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const existing = await fetchOdooSaleOrderById(userId, saleOrderId);
+  if (!existing) {
+    throw new Error('Sale order not found.');
+  }
+
+  const state = String(existing.state || '');
+  if (state !== 'sale' && state !== 'done') {
+    throw new Error('Only confirmed sales orders can be paid.');
+  }
+
+  const payable = await fetchOdooPayableInvoicesForOrder(
+    userId,
+    saleOrderId,
+    { orderName: odooString(existing.name) },
+  );
+  if (payable.length === 0) {
+    throw new Error('No unpaid invoice found for this order.');
+  }
+
+  for (const invoice of payable) {
+    if (invoice.state === 'draft') {
+      await postOdooInvoiceIfDraft(session, Number(invoice.id));
+    }
+  }
+
+  const invoiceIds = payable.map(inv => Number(inv.id));
+  const context = {
+    active_model: 'account.move',
+    active_ids: invoiceIds,
+    active_id: invoiceIds[0],
+  };
+
+  const wizardValues: Record<string, unknown> = {};
+  const methodLineId = options?.paymentMethodLineId;
+  if (
+    methodLineId !== undefined &&
+    Number.isFinite(methodLineId) &&
+    methodLineId > 0
+  ) {
+    wizardValues.payment_method_line_id = methodLineId;
+    try {
+      const methodLine = await readOdooRecordAsUser<{
+        journal_id?: [number, string] | false;
+      }>(session, 'account.payment.method.line', methodLineId, [
+        'journal_id',
+      ]);
+      const journalId = odooRelationId(methodLine?.journal_id);
+      if (journalId) {
+        wizardValues.journal_id = journalId;
+      }
+    } catch {
+      // Journal is optional; Odoo may infer it from the method line.
+    }
+  }
+
+  let wizardId: number;
+  try {
+    wizardId = await odooCallKw<number>(
+      session.cookie,
+      'account.payment.register',
+      'create',
+      [wizardValues],
+      { context },
+    );
+  } catch {
+    wizardId = await odooExecuteKw<number>(
+      session.uid,
+      'account.payment.register',
+      'create',
+      [wizardValues],
+      { context },
+    );
+  }
+
+  try {
+    await odooCallKw(
+      session.cookie,
+      'account.payment.register',
+      'action_create_payments',
+      [[wizardId]],
+      { context },
+    );
+  } catch (cookieError) {
+    try {
+      await odooExecuteKw(
+        session.uid,
+        'account.payment.register',
+        'action_create_payments',
+        [[wizardId]],
+        { context },
+      );
+    } catch {
+      throw cookieError instanceof Error
+        ? cookieError
+        : new Error('Failed to register payment in Odoo.');
+    }
+  }
+
+  const bundle = await fetchOdooSaleOrderDetailBundle(userId, saleOrderId);
+  if (!bundle) {
+    throw new Error('Payment was registered but the sale order could not be reloaded.');
+  }
+
+  const pickings = await fetchOdooOutgoingPickingsForOrder(userId, saleOrderId);
+  const invoiceName = payable.map(inv => inv.name).filter(Boolean).join(', ');
+  const totalPaid = payable.reduce((sum, inv) => sum + inv.amountResidual, 0);
+  const currency = payable[0]?.currency || '';
+
+  return {
+    ...bundle,
+    pickings,
+    invoiceName,
+    paymentLabel: currency
+      ? `${currency} ${totalPaid.toLocaleString()}`
+      : totalPaid.toLocaleString(),
   };
 }
 
@@ -5880,6 +6575,7 @@ export type OdooSaleOrderDetail = OdooSaleOrder & {
   partner_shipping_id: [number, string] | false;
   x_studio_preferred_delivery_date?: string | false;
   x_studio_delivery_notes?: string | false;
+  invoice_status?: string | false;
 };
 
 export type OdooSaleOrderLine = {
@@ -5914,6 +6610,7 @@ const SALE_ORDER_DETAIL_FIELDS = [
   'partner_shipping_id',
   'x_studio_preferred_delivery_date',
   'x_studio_delivery_notes',
+  'invoice_status',
 ];
 
 const SALE_ORDER_LINE_FIELDS = [

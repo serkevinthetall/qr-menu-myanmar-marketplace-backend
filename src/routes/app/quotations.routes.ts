@@ -5,11 +5,13 @@ import {
   cancelOdooQuotation,
   confirmOdooQuotation,
   createOdooQuotation,
-  fetchOdooOutgoingPickingsForOrder,
+  createOdooSaleOrderInvoice,
+  enrichSaleOrderActionFlags,
+  fetchOdooDeliveryPreviewsForOrder,
   fetchOdooPaymentMethodLines,
   fetchOdooQuotationDetailBundle,
   fetchOdooQuotations,
-  saleOrderHasValidatableDelivery,
+  payOdooSaleOrderInvoice,
   validateOdooSaleOrderDelivery,
 } from '../../services/odoo.service.js';
 import { AuthRequest } from '../../types/auth.js';
@@ -70,15 +72,19 @@ router.get('/:id', async (req: AuthRequest, res) => {
       return res.status(404).json({ message: 'Quotation not found.' });
     }
 
-    const pickings = await fetchOdooOutgoingPickingsForOrder(
+    const flags = await enrichSaleOrderActionFlags(
       req.user!.id,
       quotationId,
+      bundle.quotation,
     );
     // Same detail payload shape as website /api/quotations/:id
     return res.json({
       data: {
         ...mapQuotationDetail(bundle),
-        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
       },
     });
   } catch (error) {
@@ -101,14 +107,18 @@ router.post('/:id/cancel', async (req: AuthRequest, res) => {
     if (!bundle) {
       return res.status(404).json({ message: 'Quotation not found after cancel.' });
     }
-    const pickings = await fetchOdooOutgoingPickingsForOrder(
+    const flags = await enrichSaleOrderActionFlags(
       req.user!.id,
       quotationId,
+      bundle.quotation,
     );
     return res.json({
       data: {
         ...mapQuotationDetail(bundle),
-        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
       },
     });
   } catch (error) {
@@ -136,14 +146,18 @@ router.post('/:id/confirm', async (req: AuthRequest, res) => {
     if (!bundle) {
       return res.status(404).json({ message: 'Quotation not found after confirm.' });
     }
-    const pickings = await fetchOdooOutgoingPickingsForOrder(
+    const flags = await enrichSaleOrderActionFlags(
       req.user!.id,
       quotationId,
+      bundle.quotation,
     );
     return res.json({
       data: {
         ...mapQuotationDetail(bundle),
-        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
       },
     });
   } catch (error) {
@@ -157,6 +171,28 @@ router.post('/:id/confirm', async (req: AuthRequest, res) => {
           : 500;
     console.error('[app/quotations/:id/confirm]', message);
     return res.status(status).json({ message });
+  }
+});
+
+router.get('/:id/deliveries', async (req: AuthRequest, res) => {
+  const quotationId = Number(req.params.id);
+  if (!Number.isFinite(quotationId) || quotationId <= 0) {
+    return res.status(400).json({ message: 'Invalid quotation id.' });
+  }
+
+  try {
+    const data = await fetchOdooDeliveryPreviewsForOrder(
+      req.user!.id,
+      quotationId,
+    );
+    return res.json({ data });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to load delivery preview.';
+    console.error('[app/quotations/:id/deliveries]', message);
+    return res.status(500).json({ message });
   }
 });
 
@@ -174,14 +210,18 @@ router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
         message: 'Quotation not found after delivery validate.',
       });
     }
-    const pickings = await fetchOdooOutgoingPickingsForOrder(
+    const flags = await enrichSaleOrderActionFlags(
       req.user!.id,
       quotationId,
+      bundle.quotation,
     );
     return res.json({
       data: {
         ...mapQuotationDetail(bundle),
-        canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
       },
     });
   } catch (error) {
@@ -198,6 +238,111 @@ router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
           ? 404
           : 500;
     console.error('[app/quotations/:id/validate-delivery]', message);
+    return res.status(status).json({ message });
+  }
+});
+
+router.post('/:id/create-invoice', async (req: AuthRequest, res) => {
+  const quotationId = Number(req.params.id);
+  if (!Number.isFinite(quotationId) || quotationId <= 0) {
+    return res.status(400).json({ message: 'Invalid quotation id.' });
+  }
+
+  try {
+    const result = await createOdooSaleOrderInvoice(req.user!.id, quotationId);
+    const bundle = await fetchOdooQuotationDetailBundle(
+      req.user!.id,
+      quotationId,
+    );
+    if (!bundle) {
+      return res.status(404).json({
+        message: 'Quotation not found after invoice create.',
+      });
+    }
+    const flags = await enrichSaleOrderActionFlags(
+      req.user!.id,
+      quotationId,
+      bundle.quotation,
+    );
+    return res.json({
+      data: {
+        ...mapQuotationDetail(bundle),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
+        invoiceName: result.invoiceName,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to create invoice.';
+    const status =
+      /already fully invoiced|not ready to invoice|nothing to invoice|only confirmed sales orders/i.test(
+        message,
+      )
+        ? 409
+        : /not found/i.test(message)
+          ? 404
+          : 500;
+    console.error('[app/quotations/:id/create-invoice]', message);
+    return res.status(status).json({ message });
+  }
+});
+
+router.post('/:id/pay', async (req: AuthRequest, res) => {
+  const quotationId = Number(req.params.id);
+  if (!Number.isFinite(quotationId) || quotationId <= 0) {
+    return res.status(400).json({ message: 'Invalid quotation id.' });
+  }
+
+  const paymentMethodLineIdRaw = Number(
+    (req.body as { paymentMethodLineId?: unknown })?.paymentMethodLineId,
+  );
+  const paymentMethodLineId =
+    Number.isFinite(paymentMethodLineIdRaw) && paymentMethodLineIdRaw > 0
+      ? paymentMethodLineIdRaw
+      : undefined;
+
+  try {
+    const result = await payOdooSaleOrderInvoice(req.user!.id, quotationId, {
+      paymentMethodLineId,
+    });
+    const bundle = await fetchOdooQuotationDetailBundle(
+      req.user!.id,
+      quotationId,
+    );
+    if (!bundle) {
+      return res.status(404).json({
+        message: 'Quotation not found after payment.',
+      });
+    }
+    const flags = await enrichSaleOrderActionFlags(
+      req.user!.id,
+      quotationId,
+      bundle.quotation,
+    );
+    return res.json({
+      data: {
+        ...mapQuotationDetail(bundle),
+        canValidateDelivery: flags.canValidateDelivery,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
+        invoiceName: result.invoiceName,
+        paymentLabel: result.paymentLabel,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to register payment.';
+    const status =
+      /no unpaid invoice|only confirmed sales orders/i.test(message)
+        ? 409
+        : /not found/i.test(message)
+          ? 404
+          : 500;
+    console.error('[app/quotations/:id/pay]', message);
     return res.status(status).json({ message });
   }
 });
