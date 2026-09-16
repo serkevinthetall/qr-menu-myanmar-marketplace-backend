@@ -7,7 +7,6 @@ import {
   createOdooQuotation,
   fetchOdooOutgoingPickingsForOrder,
   fetchOdooPaymentMethodLines,
-  fetchOdooQuotationById,
   fetchOdooQuotationDetailBundle,
   fetchOdooQuotations,
   saleOrderHasValidatableDelivery,
@@ -282,19 +281,24 @@ router.post('/', async (req: AuthRequest, res) => {
       req.odooSession,
     );
 
-    const quotation = await fetchOdooQuotationById(req.user!.id, created.id);
+    const total = parsedLines.reduce((sum, line) => {
+      const base = line.quantity * line.unitPrice;
+      const discount = Math.min(Math.max(line.discountPercent, 0), 100);
+      return sum + base * (1 - discount / 100);
+    }, 0);
+
     return res.status(201).json({
-      data: quotation
-        ? mapQuotationSummary(quotation)
-        : {
-            id: String(created.id),
-            number: created.name,
-            createDate: new Date().toISOString().slice(0, 19).replace('T', ' '),
-            customer: '',
-            total: 0,
-            status: 'draft',
-            paymentMethod: '',
-          },
+      data: {
+        id: String(created.id),
+        number: created.name,
+        createDate: new Date().toISOString().slice(0, 19).replace('T', ' '),
+        customer: '',
+        total,
+        status: 'draft',
+        paymentMethod: '',
+        phoneNumber: toStringValue(body.phoneNumber),
+        salePersonName,
+      },
     });
   } catch (error) {
     const rawMessage =

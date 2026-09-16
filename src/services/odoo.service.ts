@@ -2118,10 +2118,17 @@ async function attachProductFavorites(
 /**
  * Resolve the live Studio field name for Sale Person Name.
  * Prefer the known technical name; fall back to ir.model.fields lookup.
+ * Cached for the process lifetime — fields_get on every save was a slow extra RTT.
  */
+let cachedSalePersonFieldName: string | undefined;
+
 async function resolveSalePersonFieldName(
   session: { cookie: string; uid: number },
 ): Promise<string> {
+  if (cachedSalePersonFieldName) {
+    return cachedSalePersonFieldName;
+  }
+
   const known = 'x_studio_sale_person_name';
 
   try {
@@ -2143,6 +2150,7 @@ async function resolveSalePersonFieldName(
           `Sale Person Name field "${known}" is not stored. In Studio, enable Stored so API can save it.`,
         );
       }
+      cachedSalePersonFieldName = known;
       return known;
     }
   } catch (error) {
@@ -2180,6 +2188,7 @@ async function resolveSalePersonFieldName(
           `Sale Person Name field "${known}" is not stored. In Studio, enable Stored so API can save it.`,
         );
       }
+      cachedSalePersonFieldName = exact.name;
       return exact.name;
     }
 
@@ -2189,6 +2198,7 @@ async function resolveSalePersonFieldName(
         .includes('sale person'),
     );
     if (byLabel) {
+      cachedSalePersonFieldName = byLabel.name;
       return byLabel.name;
     }
   } catch (error) {
@@ -2198,6 +2208,7 @@ async function resolveSalePersonFieldName(
     // Fall through to the known Studio name.
   }
 
+  cachedSalePersonFieldName = known;
   return known;
 }
 
@@ -2353,12 +2364,14 @@ export async function createOdooQuotation(
   // Always create via the login session when Studio fields are present so they
   // are not dropped by the API-key path.
   let quotationId: number;
+  let studioWrittenOnCreate = false;
   if (Object.keys(studioValues).length > 0) {
     try {
       quotationId = await createOdooRecordAsUser(session, 'sale.order', {
         ...values,
         ...studioValues,
       });
+      studioWrittenOnCreate = true;
     } catch {
       quotationId = await createOdooRecordAsUser(session, 'sale.order', values);
       for (const [field, value] of Object.entries(studioValues)) {
@@ -2366,6 +2379,9 @@ export async function createOdooQuotation(
           await writeOdooRecordAsUser(session, 'sale.order', quotationId, {
             [field]: value,
           });
+          if (field === salePersonField) {
+            studioWrittenOnCreate = true;
+          }
         } catch (error) {
           if (field === salePersonField) {
             throw error instanceof Error
@@ -2383,24 +2399,12 @@ export async function createOdooQuotation(
     quotationId = await createOdooRecord(session, 'sale.order', values);
   }
 
-  // Force-write Sale Person Name after create (covers cases where create
-  // accepted the vals but did not persist the Studio column).
-  if (salePersonName && salePersonField) {
+  // Only force-write + verify when create did not already include Studio fields.
+  // The old path added 2–3 Odoo RTTs on every save.
+  if (salePersonName && salePersonField && !studioWrittenOnCreate) {
     await writeOdooRecordAsUser(session, 'sale.order', quotationId, {
       [salePersonField]: salePersonName,
     });
-
-    // Also try API-key write when available (same uid).
-    if (env.odooApiKey) {
-      try {
-        await odooExecuteKw(session.uid, 'sale.order', 'write', [
-          [quotationId],
-          { [salePersonField]: salePersonName },
-        ]);
-      } catch {
-        // Cookie write is authoritative; API-key write is best-effort.
-      }
-    }
 
     const verify = await readOdooRecordAsUser<Record<string, string | false>>(
       session,
