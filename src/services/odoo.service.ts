@@ -2740,6 +2740,108 @@ export function saleOrderHasValidatableDelivery(
   );
 }
 
+/**
+ * Batch: which sale orders have at least one outgoing picking ready to validate.
+ * One Odoo search for list enrichment (avoids N+1).
+ */
+export async function fetchSaleOrderIdsWithValidatableDelivery(
+  userId: string,
+  saleOrderIds: number[],
+): Promise<Set<number>> {
+  const ready = new Set<number>();
+  const ids = saleOrderIds.filter(id => Number.isFinite(id) && id > 0);
+  if (ids.length === 0) {
+    return ready;
+  }
+
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const validStates = Array.from(VALIDATABLE_PICKING_STATES);
+
+  type PickingSaleRow = {
+    id: number;
+    sale_id?: [number, string] | false;
+    state?: string;
+  };
+
+  try {
+    const rows = await searchReadOdooRecords<PickingSaleRow>(
+      session,
+      'stock.picking',
+      [
+        ['sale_id', 'in', ids],
+        ['picking_type_code', '=', 'outgoing'],
+        ['state', 'in', validStates],
+      ],
+      ['id', 'sale_id', 'state'],
+      { limit: Math.min(ids.length * 5, 2000) },
+    );
+    for (const row of rows) {
+      const saleId = odooRelationId(row.sale_id);
+      if (saleId) {
+        ready.add(saleId);
+      }
+    }
+    return ready;
+  } catch {
+    // Some DBs lack sale_id / picking_type_code — fall back to origin match.
+  }
+
+  try {
+    const orders = await searchReadOdooRecords<{
+      id: number;
+      name: string | false;
+    }>(session, 'sale.order', [['id', 'in', ids]], ['id', 'name'], {
+      limit: ids.length,
+    });
+    const nameById = new Map(
+      orders.map(row => [row.id, odooString(row.name)] as const),
+    );
+    const names = [...nameById.values()].filter(Boolean);
+    if (names.length === 0) {
+      return ready;
+    }
+
+    const pickings = await searchReadOdooRecords<{
+      id: number;
+      origin?: string | false;
+      state?: string;
+      picking_type_code?: string | false;
+    }>(
+      session,
+      'stock.picking',
+      [
+        ['origin', 'in', names],
+        ['state', 'in', validStates],
+      ],
+      ['id', 'origin', 'state', 'picking_type_code'],
+      { limit: Math.min(ids.length * 5, 2000) },
+    );
+
+    const idByName = new Map(
+      [...nameById.entries()].map(([id, name]) => [name, id] as const),
+    );
+    for (const picking of pickings) {
+      const code = picking.picking_type_code;
+      if (code && code !== 'outgoing') {
+        continue;
+      }
+      const origin = odooString(picking.origin);
+      const saleId = idByName.get(origin);
+      if (saleId) {
+        ready.add(saleId);
+      }
+    }
+  } catch {
+    return ready;
+  }
+
+  return ready;
+}
+
 /** Outgoing deliveries linked to a confirmed sale order. */
 export async function fetchOdooOutgoingPickingsForOrder(
   userId: string,
@@ -2818,15 +2920,10 @@ type OdooStockMoveRow = {
   product_uom?: [number, string] | false;
 };
 
-async function fetchOdooMovesForPickings(
+async function searchStockMoves(
   session: { cookie: string; uid: number },
-  pickingIds: number[],
-): Promise<Map<number, OdooStockMoveRow[]>> {
-  const byPicking = new Map<number, OdooStockMoveRow[]>();
-  if (pickingIds.length === 0) {
-    return byPicking;
-  }
-
+  domain: unknown[],
+): Promise<OdooStockMoveRow[]> {
   const baseFields = [
     'id',
     'name',
@@ -2836,38 +2933,78 @@ async function fetchOdooMovesForPickings(
     'product_uom',
   ];
 
-  let rows: OdooStockMoveRow[] = [];
   // Odoo 17+ uses `quantity`; older versions use `quantity_done`.
   // Never request both — unknown fields make the whole read fail.
   try {
-    rows = await searchReadOdooRecords<OdooStockMoveRow>(
+    return await searchReadOdooRecords<OdooStockMoveRow>(
       session,
       'stock.move',
-      [['picking_id', 'in', pickingIds]],
+      domain,
       [...baseFields, 'quantity'],
       { order: 'id asc', limit: 2000 },
     );
   } catch {
     try {
-      rows = await searchReadOdooRecords<OdooStockMoveRow>(
+      return await searchReadOdooRecords<OdooStockMoveRow>(
         session,
         'stock.move',
-        [['picking_id', 'in', pickingIds]],
+        domain,
         [...baseFields, 'quantity_done'],
         { order: 'id asc', limit: 2000 },
       );
     } catch {
       try {
-        rows = await searchReadOdooRecords<OdooStockMoveRow>(
+        return await searchReadOdooRecords<OdooStockMoveRow>(
           session,
           'stock.move',
-          [['picking_id', 'in', pickingIds]],
+          domain,
           baseFields,
           { order: 'id asc', limit: 2000 },
         );
       } catch {
+        return [];
+      }
+    }
+  }
+}
+
+async function fetchOdooMovesForPickings(
+  session: { cookie: string; uid: number },
+  pickingIds: number[],
+): Promise<Map<number, OdooStockMoveRow[]>> {
+  const byPicking = new Map<number, OdooStockMoveRow[]>();
+  if (pickingIds.length === 0) {
+    return byPicking;
+  }
+
+  let rows = await searchStockMoves(session, [
+    ['picking_id', 'in', pickingIds],
+  ]);
+
+  // Some databases link moves only via picking.move_ids; recover those.
+  if (rows.length === 0) {
+    try {
+      const pickings = await searchReadOdooRecords<{
+        id: number;
+        move_ids?: number[];
+      }>(session, 'stock.picking', [['id', 'in', pickingIds]], ['id', 'move_ids'], {
+        limit: pickingIds.length,
+      });
+      for (const picking of pickings) {
+        const moveIds = Array.isArray(picking.move_ids) ? picking.move_ids : [];
+        if (moveIds.length === 0) {
+          continue;
+        }
+        const moves = await searchStockMoves(session, [['id', 'in', moveIds]]);
+        if (moves.length > 0) {
+          byPicking.set(picking.id, moves);
+        }
+      }
+      if (byPicking.size > 0) {
         return byPicking;
       }
+    } catch {
+      // keep empty — caller may fall back to sale order lines
     }
   }
 
@@ -2888,31 +3025,57 @@ function mapDeliveryPreviewLine(move: OdooStockMoveRow): DeliveryPreviewLine {
   const demand = Number(move.product_uom_qty);
   const doneQty = Number(move.quantity);
   const legacyDone = Number(move.quantity_done);
-  const quantity = Number.isFinite(doneQty) && doneQty > 0
-    ? doneQty
-    : Number.isFinite(legacyDone) && legacyDone > 0
-      ? legacyDone
-      : Number.isFinite(demand)
-        ? demand
-        : 0;
+  const safeDemand = Number.isFinite(demand) ? demand : 0;
+  const quantity =
+    Number.isFinite(doneQty) && doneQty > 0
+      ? doneQty
+      : Number.isFinite(legacyDone) && legacyDone > 0
+        ? legacyDone
+        : safeDemand;
+
+  const product =
+    odooRelationLabel(move.product_id) ||
+    odooString(move.name) ||
+    '—';
 
   return {
     id: String(move.id),
-    product:
-      odooRelationLabel(move.product_id) ||
-      odooString(move.name) ||
-      '—',
-    demand: Number.isFinite(demand) ? demand : 0,
+    product,
+    demand: safeDemand,
     quantity,
     unit: odooRelationLabel(move.product_uom) || 'Units',
   };
 }
 
+function mapSaleOrderLinesAsDeliveryLines(
+  lines: OdooSaleOrderLine[],
+): DeliveryPreviewLine[] {
+  return lines.map(line => {
+    const qty = Number(line.product_uom_qty);
+    const safeQty = Number.isFinite(qty) ? qty : 0;
+    return {
+      id: `sol-${line.id}`,
+      product:
+        odooRelationLabel(line.product_id) ||
+        odooString(line.name) ||
+        '—',
+      demand: safeQty,
+      quantity: safeQty,
+      unit: odooRelationLabel(line.product_uom_id) || 'Units',
+    };
+  });
+}
+
 function mapDeliveryPreview(
   picking: OdooStockPickingBrief,
   moves: OdooStockMoveRow[],
+  fallbackLines: DeliveryPreviewLine[] = [],
 ): DeliveryPreview {
   const state = String(picking.state || '');
+  const lines =
+    moves.length > 0
+      ? moves.map(mapDeliveryPreviewLine)
+      : fallbackLines;
   return {
     id: String(picking.id),
     name: odooString(picking.name) || `Picking ${picking.id}`,
@@ -2923,12 +3086,13 @@ function mapDeliveryPreview(
     partner: odooRelationLabel(picking.partner_id),
     origin: odooString(picking.origin),
     canValidate: VALIDATABLE_PICKING_STATES.has(state),
-    lines: moves.map(mapDeliveryPreviewLine),
+    lines,
   };
 }
 
 /**
- * Odoo-style delivery preview for a sale order: pickings + Demand/Qty lines.
+ * Odoo-style delivery preview for a sale order: pickings + Product/Qty lines.
+ * Falls back to sale order lines when stock moves are missing.
  */
 export async function fetchOdooDeliveryPreviewsForOrder(
   userId: string,
@@ -2949,8 +3113,21 @@ export async function fetchOdooDeliveryPreviewsForOrder(
     pickings.map(p => p.id),
   );
 
+  const needsFallback = pickings.some(
+    picking => (movesByPicking.get(picking.id) ?? []).length === 0,
+  );
+  const fallbackLines = needsFallback
+    ? mapSaleOrderLinesAsDeliveryLines(
+        await fetchOdooSaleOrderLines(userId, saleOrderId),
+      )
+    : [];
+
   return pickings.map(picking =>
-    mapDeliveryPreview(picking, movesByPicking.get(picking.id) ?? []),
+    mapDeliveryPreview(
+      picking,
+      movesByPicking.get(picking.id) ?? [],
+      fallbackLines,
+    ),
   );
 }
 
@@ -6583,6 +6760,7 @@ export type OdooSaleOrderLine = {
   name: string;
   product_id: [number, string] | false;
   product_uom_qty: number;
+  product_uom_id?: [number, string] | false;
   price_unit: number;
   price_subtotal: number;
 };
@@ -6618,6 +6796,7 @@ const SALE_ORDER_LINE_FIELDS = [
   'name',
   'product_id',
   'product_uom_qty',
+  'product_uom_id',
   'price_unit',
   'price_subtotal',
 ];

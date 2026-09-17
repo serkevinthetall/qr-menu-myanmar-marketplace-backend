@@ -12,6 +12,7 @@ import {
   fetchOdooDeliveryPreviewsForOrder,
   fetchOdooOnlineOrderDetailBundle,
   fetchOdooOnlineOrders,
+  fetchSaleOrderIdsWithValidatableDelivery,
   payOdooSaleOrderInvoice,
   validateOdooSaleOrderDelivery,
 } from '../services/odoo.service.js';
@@ -65,11 +66,19 @@ router.get('/', async (req: AuthRequest, res) => {
       q: q || undefined,
     });
     const readIds = await listReadAppOrderIds();
+    const validatableIds = await fetchSaleOrderIdsWithValidatableDelivery(
+      req.user!.id,
+      rows.map(row => row.id),
+    );
 
     let data = rows.map(row => {
       const summary = mapSaleOrderSummary(row);
       const unread = !readIds.has(row.id);
-      return { ...summary, unread };
+      return {
+        ...summary,
+        unread,
+        canValidateDelivery: validatableIds.has(row.id),
+      };
     });
 
     if (readFilter === 'read') {

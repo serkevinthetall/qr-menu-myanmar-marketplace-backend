@@ -51,7 +51,7 @@ export function mapSaleOrderDetail(input: {
       product:
         toRelationName(line.product_id) || toStringValue(line.name) || '—',
       quantity: toNumberValue(line.product_uom_qty),
-      unit: 'Units',
+      unit: toRelationName(line.product_uom_id) || 'Units',
       unitPrice: toNumberValue(line.price_unit),
       amount: toNumberValue(line.price_subtotal),
     })),

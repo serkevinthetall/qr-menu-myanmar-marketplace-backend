@@ -7,6 +7,7 @@ import {
   fetchOdooDeliveryPreviewsForOrder,
   fetchOdooSaleOrderDetailBundle,
   fetchOdooSaleOrders,
+  fetchSaleOrderIdsWithValidatableDelivery,
   payOdooSaleOrderInvoice,
   validateOdooSaleOrderDelivery,
 } from '../services/odoo.service.js';
@@ -34,7 +35,14 @@ router.get('/', async (req: AuthRequest, res) => {
       offset,
       q: q || undefined,
     });
-    const data = rows.map(mapSaleOrderSummary);
+    const validatableIds = await fetchSaleOrderIdsWithValidatableDelivery(
+      req.user!.id,
+      rows.map(row => row.id),
+    );
+    const data = rows.map(row => ({
+      ...mapSaleOrderSummary(row),
+      canValidateDelivery: validatableIds.has(row.id),
+    }));
 
     return res.json({
       data,
