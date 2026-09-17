@@ -1742,6 +1742,8 @@ export type OdooOrderLine = {
   product_id: [number, string] | false;
   product_uom_qty: number;
   product_uom_id: [number, string] | false;
+  qty_delivered?: number;
+  qty_invoiced?: number;
   price_unit: number;
   discount: number;
   price_subtotal: number;
@@ -1785,6 +1787,8 @@ const ORDER_LINE_FIELDS = [
   'product_id',
   'product_uom_qty',
   'product_uom_id',
+  'qty_delivered',
+  'qty_invoiced',
   'price_unit',
   'discount',
   'price_subtotal',
@@ -2863,6 +2867,11 @@ export async function fetchOdooOutgoingPickingsForOrder(
     'origin',
   ];
 
+  const isOutgoing = (row: OdooStockPickingBrief) => {
+    const code = row.picking_type_code;
+    return !code || code === 'outgoing';
+  };
+
   try {
     const bySaleId = await searchReadOdooRecords<OdooStockPickingBrief>(
       session,
@@ -2881,32 +2890,70 @@ export async function fetchOdooOutgoingPickingsForOrder(
     // sale_id / picking_type_code may differ by Odoo version — fall through.
   }
 
+  // Some DBs omit picking_type_code on search — retry sale_id only.
   try {
-    const saleOrder = await readOdooRecordAsUser<{
-      picking_ids?: number[];
-    }>(session, 'sale.order', saleOrderId, ['picking_ids']);
-    const pickingIds = Array.isArray(saleOrder?.picking_ids)
-      ? saleOrder.picking_ids
-      : [];
-    if (pickingIds.length === 0) {
-      return [];
-    }
-
-    const rows = await searchReadOdooRecords<OdooStockPickingBrief>(
+    const bySaleIdAny = await searchReadOdooRecords<OdooStockPickingBrief>(
       session,
       'stock.picking',
-      [['id', 'in', pickingIds]],
+      [['sale_id', '=', saleOrderId]],
       fields,
       { order: 'id asc', limit: 50 },
     );
+    const outgoing = bySaleIdAny.filter(isOutgoing);
+    if (outgoing.length > 0) {
+      return outgoing;
+    }
+  } catch {
+    // fall through
+  }
 
-    return rows.filter(row => {
-      const code = row.picking_type_code;
-      return !code || code === 'outgoing';
-    });
+  try {
+    const saleOrder = await readOdooRecordAsUser<{
+      name?: string | false;
+      picking_ids?: number[];
+      delivery_count?: number;
+    }>(session, 'sale.order', saleOrderId, [
+      'name',
+      'picking_ids',
+      'delivery_count',
+    ]);
+    const pickingIds = Array.isArray(saleOrder?.picking_ids)
+      ? saleOrder.picking_ids
+      : [];
+    if (pickingIds.length > 0) {
+      const rows = await searchReadOdooRecords<OdooStockPickingBrief>(
+        session,
+        'stock.picking',
+        [['id', 'in', pickingIds]],
+        fields,
+        { order: 'id asc', limit: 50 },
+      );
+      const outgoing = rows.filter(isOutgoing);
+      if (outgoing.length > 0) {
+        return outgoing;
+      }
+    }
+
+    // Odoo online smart button also matches Source Document = SO name.
+    const origin = odooString(saleOrder?.name);
+    if (origin) {
+      const byOrigin = await searchReadOdooRecords<OdooStockPickingBrief>(
+        session,
+        'stock.picking',
+        [['origin', '=', origin]],
+        fields,
+        { order: 'id asc', limit: 50 },
+      );
+      const outgoing = byOrigin.filter(isOutgoing);
+      if (outgoing.length > 0) {
+        return outgoing;
+      }
+    }
   } catch {
     return [];
   }
+
+  return [];
 }
 
 type OdooStockMoveRow = {
@@ -3091,7 +3138,8 @@ function mapDeliveryPreview(
 }
 
 /**
- * Odoo-style delivery preview for a sale order: pickings + Product/Qty lines.
+ * Odoo-style delivery preview for a sale order: pickings + Product/Qty lines
+ * (same as clicking Delivery on the online Odoo sale → WH/OUT/…).
  * Falls back to sale order lines when stock moves are missing.
  */
 export async function fetchOdooDeliveryPreviewsForOrder(
@@ -3713,6 +3761,7 @@ export async function enrichSaleOrderActionFlags(
   },
 ): Promise<{
   canValidateDelivery: boolean;
+  deliveryCount: number;
   canCreateInvoice: boolean;
   canPayInvoice: boolean;
   payableInvoice?: {
@@ -3733,6 +3782,7 @@ export async function enrichSaleOrderActionFlags(
   const first = payable[0];
   return {
     canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
+    deliveryCount: pickings.length,
     canCreateInvoice: saleOrderCanCreateInvoice(saleOrder),
     canPayInvoice: saleOrderCanPayInvoice(payable),
     payableInvoice: first
@@ -6761,6 +6811,8 @@ export type OdooSaleOrderLine = {
   product_id: [number, string] | false;
   product_uom_qty: number;
   product_uom_id?: [number, string] | false;
+  qty_delivered?: number;
+  qty_invoiced?: number;
   price_unit: number;
   price_subtotal: number;
 };
@@ -6797,6 +6849,8 @@ const SALE_ORDER_LINE_FIELDS = [
   'product_id',
   'product_uom_qty',
   'product_uom_id',
+  'qty_delivered',
+  'qty_invoiced',
   'price_unit',
   'price_subtotal',
 ];
@@ -6806,6 +6860,7 @@ const SALE_ORDER_LINE_FIELDS_MIN = [
   'name',
   'product_id',
   'product_uom_qty',
+  'qty_delivered',
   'price_unit',
 ];
 

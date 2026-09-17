@@ -112,6 +112,8 @@ export function mapQuotationDetail(input: {
       product:
         toRelationName(line.product_id) || toStringValue(line.name) || '—',
       quantity: toNumberValue(line.product_uom_qty),
+      deliveredQty: toNumberValue(line.qty_delivered),
+      invoicedQty: toNumberValue(line.qty_invoiced),
       unit: toRelationName(line.product_uom_id) || 'Units',
       unitPrice: toNumberValue(line.price_unit),
       discountPercent: toNumberValue(line.discount),

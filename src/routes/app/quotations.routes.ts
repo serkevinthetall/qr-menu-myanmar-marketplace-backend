@@ -82,6 +82,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
       data: {
         ...mapQuotationDetail(bundle),
         canValidateDelivery: flags.canValidateDelivery,
+        deliveryCount: flags.deliveryCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
@@ -116,6 +117,7 @@ router.post('/:id/cancel', async (req: AuthRequest, res) => {
       data: {
         ...mapQuotationDetail(bundle),
         canValidateDelivery: flags.canValidateDelivery,
+        deliveryCount: flags.deliveryCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
@@ -155,6 +157,7 @@ router.post('/:id/confirm', async (req: AuthRequest, res) => {
       data: {
         ...mapQuotationDetail(bundle),
         canValidateDelivery: flags.canValidateDelivery,
+        deliveryCount: flags.deliveryCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
@@ -219,6 +222,7 @@ router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
       data: {
         ...mapQuotationDetail(bundle),
         canValidateDelivery: flags.canValidateDelivery,
+        deliveryCount: flags.deliveryCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
@@ -268,6 +272,7 @@ router.post('/:id/create-invoice', async (req: AuthRequest, res) => {
       data: {
         ...mapQuotationDetail(bundle),
         canValidateDelivery: flags.canValidateDelivery,
+        deliveryCount: flags.deliveryCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
@@ -326,6 +331,7 @@ router.post('/:id/pay', async (req: AuthRequest, res) => {
       data: {
         ...mapQuotationDetail(bundle),
         canValidateDelivery: flags.canValidateDelivery,
+        deliveryCount: flags.deliveryCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
