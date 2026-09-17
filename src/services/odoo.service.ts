@@ -3666,22 +3666,94 @@ export type PayableInvoice = {
   paymentState: string;
 };
 
+export type InvoicePreviewLine = {
+  id: string;
+  product: string;
+  quantity: number;
+  unitPrice: number;
+  amount: number;
+  unit: string;
+};
+
+export type InvoicePreview = {
+  id: string;
+  name: string;
+  state: string;
+  stateLabel: string;
+  paymentState: string;
+  paymentStateLabel: string;
+  invoiceDate: string;
+  partner: string;
+  origin: string;
+  amountUntaxed: number;
+  amountTotal: number;
+  amountResidual: number;
+  currency: string;
+  canPay: boolean;
+  lines: InvoicePreviewLine[];
+};
+
 type OdooInvoiceRow = {
   id: number;
   name?: string | false;
   state?: string;
   payment_state?: string | false;
   amount_residual?: number;
+  amount_untaxed?: number;
   amount_total?: number;
   currency_id?: [number, string] | false;
+  invoice_date?: string | false;
+  partner_id?: [number, string] | false;
+  invoice_origin?: string | false;
+  invoice_line_ids?: number[];
 };
 
-/** Open customer invoices for a sale order (amount still due). */
-export async function fetchOdooPayableInvoicesForOrder(
+type OdooInvoiceLineRow = {
+  id: number;
+  name?: string | false;
+  product_id?: [number, string] | false;
+  quantity?: number;
+  price_unit?: number;
+  price_subtotal?: number;
+  product_uom_id?: [number, string] | false;
+  display_type?: string | false;
+};
+
+function invoiceStateLabel(state: string): string {
+  switch (state) {
+    case 'draft':
+      return 'Draft';
+    case 'posted':
+      return 'Posted';
+    case 'cancel':
+      return 'Cancelled';
+    default:
+      return state || '—';
+  }
+}
+
+function invoicePaymentStateLabel(paymentState: string): string {
+  switch (paymentState) {
+    case 'not_paid':
+      return 'Not Paid';
+    case 'in_payment':
+      return 'In Payment';
+    case 'paid':
+      return 'Paid';
+    case 'partial':
+      return 'Partially Paid';
+    case 'reversed':
+      return 'Reversed';
+    default:
+      return paymentState || '—';
+  }
+}
+
+async function loadOdooInvoiceRowsForOrder(
   userId: string,
   saleOrderId: number,
   options?: { orderName?: string },
-): Promise<PayableInvoice[]> {
+): Promise<OdooInvoiceRow[]> {
   const session = getOdooSession(userId);
   if (!session) {
     throw new Error('Odoo session expired. Please log in again.');
@@ -3711,14 +3783,18 @@ export async function fetchOdooPayableInvoicesForOrder(
     'state',
     'payment_state',
     'amount_residual',
+    'amount_untaxed',
     'amount_total',
     'currency_id',
+    'invoice_date',
+    'partner_id',
+    'invoice_origin',
+    'invoice_line_ids',
   ];
 
-  let rows: OdooInvoiceRow[] = [];
   try {
     if (invoiceIds.length > 0) {
-      rows = await searchReadOdooRecords<OdooInvoiceRow>(
+      return await searchReadOdooRecords<OdooInvoiceRow>(
         session,
         'account.move',
         [
@@ -3728,8 +3804,9 @@ export async function fetchOdooPayableInvoicesForOrder(
         fields,
         { order: 'id asc', limit: 50 },
       );
-    } else if (orderName) {
-      rows = await searchReadOdooRecords<OdooInvoiceRow>(
+    }
+    if (orderName) {
+      return await searchReadOdooRecords<OdooInvoiceRow>(
         session,
         'account.move',
         [
@@ -3743,6 +3820,181 @@ export async function fetchOdooPayableInvoicesForOrder(
   } catch {
     return [];
   }
+
+  return [];
+}
+
+async function fetchOdooInvoiceLinesByMove(
+  session: { cookie: string; uid: number },
+  moveIds: number[],
+): Promise<Map<number, OdooInvoiceLineRow[]>> {
+  const map = new Map<number, OdooInvoiceLineRow[]>();
+  if (moveIds.length === 0) {
+    return map;
+  }
+
+  try {
+    const rows = await searchReadOdooRecords<
+      OdooInvoiceLineRow & { move_id?: [number, string] | false }
+    >(
+      session,
+      'account.move.line',
+      [
+        ['move_id', 'in', moveIds],
+        ['display_type', 'not in', ['line_section', 'line_note']],
+        ['exclude_from_invoice_tab', '=', false],
+      ],
+      [
+        'id',
+        'name',
+        'product_id',
+        'quantity',
+        'price_unit',
+        'price_subtotal',
+        'product_uom_id',
+        'display_type',
+        'move_id',
+      ],
+      { order: 'id asc', limit: 2000 },
+    );
+
+    for (const row of rows) {
+      const moveId = Array.isArray(row.move_id) ? Number(row.move_id[0]) : 0;
+      if (!Number.isFinite(moveId) || moveId <= 0) {
+        continue;
+      }
+      const list = map.get(moveId) ?? [];
+      list.push(row);
+      map.set(moveId, list);
+    }
+  } catch {
+    // Older DBs may lack exclude_from_invoice_tab — retry without it.
+    try {
+      const rows = await searchReadOdooRecords<
+        OdooInvoiceLineRow & { move_id?: [number, string] | false }
+      >(
+        session,
+        'account.move.line',
+        [
+          ['move_id', 'in', moveIds],
+          ['display_type', 'not in', ['line_section', 'line_note']],
+        ],
+        [
+          'id',
+          'name',
+          'product_id',
+          'quantity',
+          'price_unit',
+          'price_subtotal',
+          'product_uom_id',
+          'display_type',
+          'move_id',
+        ],
+        { order: 'id asc', limit: 2000 },
+      );
+      for (const row of rows) {
+        const moveId = Array.isArray(row.move_id) ? Number(row.move_id[0]) : 0;
+        if (!Number.isFinite(moveId) || moveId <= 0) {
+          continue;
+        }
+        // Skip pure accounting lines (no product and zero qty).
+        const qty = Number(row.quantity);
+        const hasProduct = Array.isArray(row.product_id);
+        if (!hasProduct && !(Number.isFinite(qty) && qty !== 0)) {
+          continue;
+        }
+        const list = map.get(moveId) ?? [];
+        list.push(row);
+        map.set(moveId, list);
+      }
+    } catch {
+      return map;
+    }
+  }
+
+  return map;
+}
+
+function mapInvoicePreviewLine(line: OdooInvoiceLineRow): InvoicePreviewLine {
+  return {
+    id: String(line.id),
+    product:
+      odooRelationLabel(line.product_id) ||
+      odooString(line.name) ||
+      `Line ${line.id}`,
+    quantity: Number(line.quantity) || 0,
+    unitPrice: Number(line.price_unit) || 0,
+    amount: Number(line.price_subtotal) || 0,
+    unit: odooRelationLabel(line.product_uom_id) || 'Units',
+  };
+}
+
+function mapInvoicePreview(
+  row: OdooInvoiceRow,
+  lines: OdooInvoiceLineRow[],
+): InvoicePreview {
+  const state = String(row.state || '');
+  const paymentState = odooString(row.payment_state);
+  const residual = Number(row.amount_residual) || 0;
+  return {
+    id: String(row.id),
+    name: odooString(row.name) || `Invoice ${row.id}`,
+    state,
+    stateLabel: invoiceStateLabel(state),
+    paymentState,
+    paymentStateLabel: invoicePaymentStateLabel(paymentState),
+    invoiceDate: odooString(row.invoice_date),
+    partner: odooRelationLabel(row.partner_id),
+    origin: odooString(row.invoice_origin),
+    amountUntaxed: Number(row.amount_untaxed) || 0,
+    amountTotal: Number(row.amount_total) || 0,
+    amountResidual: residual,
+    currency: odooRelationLabel(row.currency_id),
+    canPay: state === 'posted' && residual > 0.0001,
+    lines: lines.map(mapInvoicePreviewLine),
+  };
+}
+
+/** Customer invoices for a sale order (Odoo Invoice smart button). */
+export async function fetchOdooInvoicePreviewsForOrder(
+  userId: string,
+  saleOrderId: number,
+  options?: { orderName?: string },
+): Promise<InvoicePreview[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const rows = (
+    await loadOdooInvoiceRowsForOrder(userId, saleOrderId, options)
+  ).filter(row => String(row.state || '') !== 'cancel');
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const linesByMove = await fetchOdooInvoiceLinesByMove(
+    session,
+    rows.map(row => row.id),
+  );
+
+  return rows.map(row =>
+    mapInvoicePreview(row, linesByMove.get(row.id) ?? []),
+  );
+}
+
+/** Open customer invoices for a sale order (amount still due). */
+export async function fetchOdooPayableInvoicesForOrder(
+  userId: string,
+  saleOrderId: number,
+  options?: { orderName?: string },
+): Promise<PayableInvoice[]> {
+  const rows = await loadOdooInvoiceRowsForOrder(
+    userId,
+    saleOrderId,
+    options,
+  );
 
   return rows
     .filter(row => {
@@ -3778,6 +4030,7 @@ export async function enrichSaleOrderActionFlags(
 ): Promise<{
   canValidateDelivery: boolean;
   deliveryCount: number;
+  invoiceCount: number;
   canCreateInvoice: boolean;
   canPayInvoice: boolean;
   payableInvoice?: {
@@ -3788,19 +4041,31 @@ export async function enrichSaleOrderActionFlags(
   };
   pickings: OdooStockPickingBrief[];
 }> {
-  const [pickings, payable] = await Promise.all([
+  const orderName = odooString(saleOrder.name);
+  const [pickings, invoices] = await Promise.all([
     fetchOdooOutgoingPickingsForOrder(userId, saleOrderId),
-    fetchOdooPayableInvoicesForOrder(userId, saleOrderId, {
-      orderName: odooString(saleOrder.name),
-    }),
+    fetchOdooInvoicePreviewsForOrder(userId, saleOrderId, { orderName }),
   ]);
 
+  const payable = invoices.filter(inv => inv.canPay);
   const first = payable[0];
   return {
     canValidateDelivery: saleOrderHasValidatableDelivery(pickings),
     deliveryCount: pickings.length,
+    invoiceCount: invoices.length,
+    // Odoo: Create Invoice only on confirmed SO (sale/done) with qty to invoice.
     canCreateInvoice: saleOrderCanCreateInvoice(saleOrder),
-    canPayInvoice: saleOrderCanPayInvoice(payable),
+    canPayInvoice: saleOrderCanPayInvoice(
+      payable.map(inv => ({
+        id: inv.id,
+        name: inv.name,
+        amountResidual: inv.amountResidual,
+        amountTotal: inv.amountTotal,
+        currency: inv.currency,
+        state: inv.state,
+        paymentState: inv.paymentState,
+      })),
+    ),
     payableInvoice: first
       ? {
           id: first.id,

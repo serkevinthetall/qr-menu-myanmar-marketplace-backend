@@ -1,3 +1,9 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/telegram/cron/daily-report",
+      "schedule": "25 10 * * *"
+    }
+  ]
 }

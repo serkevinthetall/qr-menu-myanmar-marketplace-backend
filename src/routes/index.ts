@@ -17,6 +17,7 @@ import { Router } from 'express';
  *   /api/sale-orders/*
  *   /api/online-orders/*
  *   /api/insights/*
+ *   /api/telegram/*   (webhook, Vercel cron, daily report)
  *
  * PHONE APP (sales-rep handheld):
  *   /api/app/health
@@ -46,6 +47,7 @@ import productsRoutes from './products.routes.js';
 import purchaseOrdersRoutes from './purchase-orders.routes.js';
 import quotationsRoutes from './quotations.routes.js';
 import saleOrdersRoutes from './sale-orders.routes.js';
+import telegramRoutes from './telegram.routes.js';
 import { env } from '../config/env.js';
 
 const router = Router();
@@ -72,6 +74,7 @@ router.use('/purchase-orders', purchaseOrdersRoutes);
 router.use('/sale-orders', saleOrdersRoutes);
 router.use('/online-orders', onlineOrdersRoutes);
 router.use('/insights', insightsRoutes);
+router.use('/telegram', telegramRoutes);
 // @temp-feature app-install-call-list
 if (env.enableAppInstallCallList) {
   router.use('/app-installs', appInstallsRoutes);

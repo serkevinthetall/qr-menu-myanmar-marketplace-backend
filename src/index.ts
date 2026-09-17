@@ -1,5 +1,6 @@
 import app from './app.js';
 import { env } from './config/env.js';
+import { startTelegramDailyReportJobs } from './services/telegram-daily-report.job.js';
 
 app.listen(env.port, env.host, () => {
   const local = `http://localhost:${env.port}`;
@@ -18,4 +19,6 @@ app.listen(env.port, env.host, () => {
       `  Note: detected IP is ${env.detectedLanHost} (LAN_HOST in .env is ${env.lanHost})`,
     );
   }
+
+  startTelegramDailyReportJobs();
 });

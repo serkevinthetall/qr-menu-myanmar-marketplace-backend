@@ -181,4 +181,37 @@ export const env = {
   geminiModel: (process.env.GEMINI_MODEL ?? 'gemini-3.6-flash').trim(),
   groqApiKey: process.env.GROQ_API_KEY ?? '',
   groqModel: (process.env.GROQ_MODEL ?? 'llama-3.1-8b-instant').trim(),
+
+  /**
+   * Telegram daily App Install report.
+   * On Vercel: webhook (/start) + Cron (daily). Local: optional node-cron + polling.
+   * Only TELEGRAM_CHAT_IDS receive reports; everyone else is unauthorized.
+   */
+  telegramBotToken: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim(),
+  telegramChatIds: (process.env.TELEGRAM_CHAT_IDS ?? '')
+    .split(',')
+    .map(id => id.trim())
+    .filter(Boolean),
+  telegramReportCron: (process.env.TELEGRAM_REPORT_CRON ?? '55 16 * * *').trim(),
+  telegramReportTz: (process.env.TELEGRAM_REPORT_TZ ?? 'Asia/Yangon').trim(),
+  /** Secret Telegram sends as X-Telegram-Bot-Api-Secret-Token */
+  telegramWebhookSecret: (process.env.TELEGRAM_WEBHOOK_SECRET ?? '').trim(),
+  /**
+   * Public HTTPS webhook URL, e.g.
+   * https://your-backend.vercel.app/api/telegram/webhook
+   */
+  telegramWebhookUrl: (process.env.TELEGRAM_WEBHOOK_URL ?? '').trim(),
+  /** Vercel Cron Authorization: Bearer <CRON_SECRET> */
+  cronSecret: (process.env.CRON_SECRET ?? '').trim(),
+  /** True when running on Vercel (serverless). */
+  isVercel: Boolean(process.env.VERCEL),
+  telegramDailyReportEnabled: (() => {
+    const flag = (process.env.TELEGRAM_DAILY_REPORT_ENABLED ?? '').trim().toLowerCase();
+    if (flag === 'false' || flag === '0' || flag === 'off') return false;
+    if (flag === 'true' || flag === '1' || flag === 'on') return true;
+    return Boolean(
+      (process.env.TELEGRAM_BOT_TOKEN ?? '').trim() &&
+        (process.env.TELEGRAM_CHAT_IDS ?? '').trim(),
+    );
+  })(),
 };

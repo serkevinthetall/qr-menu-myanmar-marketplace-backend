@@ -5,6 +5,7 @@ import {
   createOdooSaleOrderInvoice,
   enrichSaleOrderActionFlags,
   fetchOdooDeliveryPreviewsForOrder,
+  fetchOdooInvoicePreviewsForOrder,
   fetchOdooSaleOrderDetailBundle,
   fetchOdooSaleOrders,
   fetchSaleOrderIdsWithValidatableDelivery,
@@ -86,6 +87,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
         ...mapSaleOrderDetail(bundle),
         canValidateDelivery: flags.canValidateDelivery,
         deliveryCount: flags.deliveryCount,
+        invoiceCount: flags.invoiceCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
@@ -121,6 +123,28 @@ router.get('/:id/deliveries', async (req: AuthRequest, res) => {
   }
 });
 
+router.get('/:id/invoices', async (req: AuthRequest, res) => {
+  const saleOrderId = Number(req.params.id);
+  if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
+    return res.status(400).json({ message: 'Invalid sale order id.' });
+  }
+
+  try {
+    const data = await fetchOdooInvoicePreviewsForOrder(
+      req.user!.id,
+      saleOrderId,
+    );
+    return res.json({ data });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to load invoices.';
+    console.error('[sale-orders] invoices', message);
+    return res.status(500).json({ message });
+  }
+});
+
 router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
   const saleOrderId = Number(req.params.id);
   if (!Number.isFinite(saleOrderId) || saleOrderId <= 0) {
@@ -150,6 +174,7 @@ router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
         ...mapSaleOrderDetail(result),
         canValidateDelivery: flags.canValidateDelivery,
         deliveryCount: flags.deliveryCount,
+        invoiceCount: flags.invoiceCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
@@ -191,6 +216,7 @@ router.post('/:id/create-invoice', async (req: AuthRequest, res) => {
         ...mapSaleOrderDetail(result),
         canValidateDelivery: flags.canValidateDelivery,
         deliveryCount: flags.deliveryCount,
+        invoiceCount: flags.invoiceCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
@@ -241,6 +267,7 @@ router.post('/:id/pay', async (req: AuthRequest, res) => {
         ...mapSaleOrderDetail(result),
         canValidateDelivery: flags.canValidateDelivery,
         deliveryCount: flags.deliveryCount,
+        invoiceCount: flags.invoiceCount,
         canCreateInvoice: flags.canCreateInvoice,
         canPayInvoice: flags.canPayInvoice,
         payableInvoice: flags.payableInvoice,
