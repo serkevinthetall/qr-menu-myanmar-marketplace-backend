@@ -374,7 +374,18 @@ router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
   }
 
   try {
-    await validateOdooSaleOrderDelivery(req.user!.id, quotationId);
+    const pickingIdRaw = Number(
+      (req.body as { pickingId?: string | number } | undefined)?.pickingId,
+    );
+    const pickingId =
+      Number.isFinite(pickingIdRaw) && pickingIdRaw > 0
+        ? pickingIdRaw
+        : undefined;
+    await validateOdooSaleOrderDelivery(
+      req.user!.id,
+      quotationId,
+      pickingId ? { pickingId } : undefined,
+    );
     const bundle = await fetchOdooQuotationDetailBundle(
       req.user!.id,
       quotationId,

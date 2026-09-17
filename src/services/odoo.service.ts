@@ -3417,6 +3417,7 @@ async function validateOdooPicking(
 export async function validateOdooSaleOrderDelivery(
   userId: string,
   saleOrderId: number,
+  options?: { pickingId?: number },
 ): Promise<{
   saleOrder: OdooSaleOrderDetail;
   lines: OdooSaleOrderLine[];
@@ -3440,9 +3441,24 @@ export async function validateOdooSaleOrderDelivery(
   }
 
   const pickings = await fetchOdooOutgoingPickingsForOrder(userId, saleOrderId);
-  const pending = pickings.filter(p =>
+  let pending = pickings.filter(p =>
     VALIDATABLE_PICKING_STATES.has(String(p.state || '')),
   );
+
+  const pickingId = options?.pickingId;
+  if (pickingId && Number.isFinite(pickingId) && pickingId > 0) {
+    pending = pending.filter(p => p.id === pickingId);
+    if (pending.length === 0) {
+      const target = pickings.find(p => p.id === pickingId);
+      if (!target) {
+        throw new Error('Delivery not found for this order.');
+      }
+      if (String(target.state) === 'done') {
+        throw new Error('Delivery is already validated.');
+      }
+      throw new Error('This delivery is not ready to validate.');
+    }
+  }
 
   if (pending.length === 0) {
     if (pickings.length > 0 && pickings.every(p => String(p.state) === 'done')) {

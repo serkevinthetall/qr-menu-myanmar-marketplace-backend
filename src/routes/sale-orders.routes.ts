@@ -128,9 +128,17 @@ router.post('/:id/validate-delivery', async (req: AuthRequest, res) => {
   }
 
   try {
+    const pickingIdRaw = Number(
+      (req.body as { pickingId?: string | number } | undefined)?.pickingId,
+    );
+    const pickingId =
+      Number.isFinite(pickingIdRaw) && pickingIdRaw > 0
+        ? pickingIdRaw
+        : undefined;
     const result = await validateOdooSaleOrderDelivery(
       req.user!.id,
       saleOrderId,
+      pickingId ? { pickingId } : undefined,
     );
     const flags = await enrichSaleOrderActionFlags(
       req.user!.id,
