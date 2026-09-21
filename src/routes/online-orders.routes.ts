@@ -67,10 +67,19 @@ router.get('/', async (req: AuthRequest, res) => {
       q: q || undefined,
     });
     const readIds = await listReadAppOrderIds();
-    const validatableIds = await fetchSaleOrderIdsWithValidatableDelivery(
-      req.user!.id,
-      rows.map(row => row.id),
-    );
+    // Opt-in: stock.picking enrichment is slow (~seconds). Only when list
+    // selection / bulk validate is enabled (includeValidate=1).
+    const includeValidateRaw = String(req.query.includeValidate ?? '')
+      .trim()
+      .toLowerCase();
+    const includeValidate =
+      includeValidateRaw === '1' || includeValidateRaw === 'true';
+    const validatableIds = includeValidate
+      ? await fetchSaleOrderIdsWithValidatableDelivery(
+          req.user!.id,
+          rows.map(row => row.id),
+        )
+      : new Set<number>();
 
     let data = rows.map(row => {
       const summary = mapSaleOrderSummary(row);
