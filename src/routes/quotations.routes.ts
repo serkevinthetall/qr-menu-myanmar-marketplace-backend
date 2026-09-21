@@ -28,6 +28,22 @@ import {
 
 const router = Router();
 
+const QUOTATION_STATUS_STATES: Record<string, string[]> = {
+  quotation: ['draft', 'sent'],
+  sale: ['sale', 'done'],
+  cancel: ['cancel'],
+};
+
+function quotationStatesForFilterKeys(keys: string[]): string[] {
+  const states = new Set<string>();
+  for (const key of keys) {
+    for (const state of QUOTATION_STATUS_STATES[key] ?? []) {
+      states.add(state);
+    }
+  }
+  return [...states];
+}
+
 router.use(authMiddleware);
 
 router.get('/payment-methods', async (req: AuthRequest, res) => {
@@ -54,8 +70,22 @@ router.get('/', async (req: AuthRequest, res) => {
       Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 200;
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
 
+    const from = String(req.query.from ?? '').trim();
+    const to = String(req.query.to ?? '').trim();
+    const statusRaw = String(req.query.status ?? '').trim();
+    const statusKeys = statusRaw
+      ? statusRaw.split(',').map(item => item.trim()).filter(Boolean)
+      : [];
+    const states = quotationStatesForFilterKeys(statusKeys);
+
     const [quotations, paymentMethods] = await Promise.all([
-      fetchOdooQuotations(req.user!.id, { limit, offset }),
+      fetchOdooQuotations(req.user!.id, {
+        limit,
+        offset,
+        from: from || undefined,
+        to: to || undefined,
+        states: states.length > 0 ? states : undefined,
+      }),
       fetchOdooPaymentMethodLines(req.user!.id),
     ]);
 

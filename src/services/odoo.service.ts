@@ -2469,7 +2469,13 @@ async function searchReadOdooRecords<T>(
 
 export async function fetchOdooQuotations(
   userId: string,
-  options?: { limit?: number; offset?: number },
+  options?: {
+    limit?: number;
+    offset?: number;
+    from?: string;
+    to?: string;
+    states?: string[];
+  },
 ): Promise<OdooQuotation[]> {
   const session = getOdooSession(userId);
 
@@ -2486,6 +2492,13 @@ export async function fetchOdooQuotations(
       ? Math.floor(options.offset)
       : 0;
 
+  const domain: unknown[] = [];
+  appendOrderDateDomain(domain, options?.from, options?.to, 'create_date');
+  const states = (options?.states ?? []).map(state => state.trim()).filter(Boolean);
+  if (states.length > 0) {
+    domain.push(['state', 'in', states]);
+  }
+
   const response = await fetch(`${env.odooUrl}/web/dataset/call_kw`, {
     method: 'POST',
     headers: {
@@ -2498,7 +2511,7 @@ export async function fetchOdooQuotations(
       params: {
         model: 'sale.order',
         method: 'search_read',
-        args: [[], QUOTATION_LIST_FIELDS],
+        args: [domain, QUOTATION_LIST_FIELDS],
         kwargs: {
           order: 'create_date desc',
           limit,
@@ -7147,7 +7160,7 @@ const SALE_ORDER_LINE_FIELDS_MIN = [
 
 export async function fetchOdooSaleOrders(
   userId: string,
-  options?: { limit?: number; offset?: number; q?: string },
+  options?: { limit?: number; offset?: number; q?: string; from?: string; to?: string },
 ): Promise<OdooSaleOrder[]> {
   const session = getOdooSession(userId);
   if (!session) {
@@ -7164,6 +7177,7 @@ export async function fetchOdooSaleOrders(
       : 0;
 
   const domain: unknown[] = [['state', 'in', ['sale', 'done']]];
+  appendOrderDateDomain(domain, options?.from, options?.to);
   const q = options?.q?.trim();
   if (q) {
     domain.push('|');
@@ -7370,7 +7384,7 @@ function buildAppOrderDomain(administratorUserId: number | null): unknown[] {
 
 export async function fetchOdooOnlineOrders(
   userId: string,
-  options?: { limit?: number; offset?: number; q?: string },
+  options?: { limit?: number; offset?: number; q?: string; from?: string; to?: string },
 ): Promise<OdooSaleOrder[]> {
   const session = getOdooSession(userId);
   if (!session) {
@@ -7388,6 +7402,7 @@ export async function fetchOdooOnlineOrders(
 
   const administratorUserId = await resolveAdministratorUserId(session);
   const domain = buildAppOrderDomain(administratorUserId);
+  appendOrderDateDomain(domain, options?.from, options?.to);
   const q = options?.q?.trim();
   if (q) {
     domain.push('|');
@@ -7421,6 +7436,7 @@ export async function fetchOdooOnlineOrders(
         message,
       );
       const fallbackDomain: unknown[] = [['state', '=', 'sent']];
+      appendOrderDateDomain(fallbackDomain, options?.from, options?.to);
       if (q) {
         fallbackDomain.push('|');
         fallbackDomain.push('|');
@@ -7710,6 +7726,25 @@ function buildPeriodWindow(period: OverviewPeriod, now = new Date()) {
 
 function toOdooDatetime(date: Date): string {
   return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+const ORDER_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Inclusive calendar dates (YYYY-MM-DD) on sale.order date_order. */
+function appendOrderDateDomain(
+  domain: unknown[],
+  from?: string,
+  to?: string,
+  field = 'date_order',
+): void {
+  const start = from?.trim();
+  const end = to?.trim();
+  if (start && ORDER_DATE_RE.test(start)) {
+    domain.push([field, '>=', `${start} 00:00:00`]);
+  }
+  if (end && ORDER_DATE_RE.test(end)) {
+    domain.push([field, '<=', `${end} 23:59:59`]);
+  }
 }
 
 function paidSaleDomain(fromStr: string, toStr: string): unknown[] {

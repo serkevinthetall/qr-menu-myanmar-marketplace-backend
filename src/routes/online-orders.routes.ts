@@ -55,6 +55,8 @@ router.get('/', async (req: AuthRequest, res) => {
       Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 200;
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
     const q = String(req.query.q ?? '').trim();
+    const from = String(req.query.from ?? '').trim();
+    const to = String(req.query.to ?? '').trim();
     const readFilterRaw = String(req.query.read ?? '').trim().toLowerCase();
     const readFilter =
       readFilterRaw === 'read' || readFilterRaw === 'unread'
@@ -65,6 +67,8 @@ router.get('/', async (req: AuthRequest, res) => {
       limit,
       offset,
       q: q || undefined,
+      from: from || undefined,
+      to: to || undefined,
     });
     const readIds = await listReadAppOrderIds();
     // Opt-in: stock.picking enrichment is slow (~seconds). Only when list
