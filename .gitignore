@@ -8,3 +8,6 @@ data/ai-insights/
 data/product-favorites/
 !data/product-favorites/.gitkeep
 data/app-order-read/
+.vercel
+.env.local
+.env.vercel*

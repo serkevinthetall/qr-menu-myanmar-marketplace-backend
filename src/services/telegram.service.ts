@@ -29,8 +29,8 @@ export function isTelegramChatAllowed(chatId: string | number): boolean {
 export function buildTelegramBotStatusReply(): string {
   const host = env.isVercel ? 'Vercel' : 'local Express';
   const cron = env.isVercel
-    ? 'Vercel Cron ~16:55 Asia/Yangon (10:25 UTC)'
-    : `${env.telegramReportCron || '55 16 * * *'} (${env.telegramReportTz || 'Asia/Yangon'})`;
+    ? 'Vercel Cron ~16:30 Asia/Yangon (10:00 UTC)'
+    : `${env.telegramReportCron || '30 16 * * *'} (${env.telegramReportTz || 'Asia/Yangon'})`;
   const gemini = env.geminiApiKey ? 'ON' : 'OFF';
   const mongo = isMongoConfigured() ? 'ON' : 'OFF';
   const chats = env.telegramChatIds.length;

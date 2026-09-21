@@ -71,7 +71,7 @@ export function startTelegramDailyReportJobs(): void {
     console.log('[telegram-daily-report] Local polling for /start enabled.');
   }
 
-  const expression = env.telegramReportCron || '55 16 * * *';
+  const expression = env.telegramReportCron || '30 16 * * *';
   const timezone = env.telegramReportTz || 'Asia/Yangon';
 
   if (!cron.validate(expression)) {

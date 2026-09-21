@@ -42,7 +42,7 @@ router.post('/webhook', async (req, res) => {
 /**
  * Vercel Cron → daily report (GET).
  * Secured by Authorization: Bearer CRON_SECRET.
- * Schedule in vercel.json: 25 10 * * * (≈ 16:55 Asia/Yangon).
+ * Schedule in vercel.json: 0 10 * * * (≈ 16:30 Asia/Yangon).
  */
 router.get('/cron/daily-report', async (req, res) => {
   try {

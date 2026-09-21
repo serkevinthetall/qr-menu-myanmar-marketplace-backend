@@ -192,7 +192,7 @@ export const env = {
     .split(',')
     .map(id => id.trim())
     .filter(Boolean),
-  telegramReportCron: (process.env.TELEGRAM_REPORT_CRON ?? '55 16 * * *').trim(),
+  telegramReportCron: (process.env.TELEGRAM_REPORT_CRON ?? '30 16 * * *').trim(),
   telegramReportTz: (process.env.TELEGRAM_REPORT_TZ ?? 'Asia/Yangon').trim(),
   /** Secret Telegram sends as X-Telegram-Bot-Api-Secret-Token */
   telegramWebhookSecret: (process.env.TELEGRAM_WEBHOOK_SECRET ?? '').trim(),
