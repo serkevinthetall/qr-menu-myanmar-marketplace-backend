@@ -4413,6 +4413,15 @@ export type CreateContactInput = {
   tagNames?: string[];
   parentId?: number;
   type?: 'contact' | 'delivery' | 'invoice' | 'other';
+  /** Mark partner as Purchase vendor (supplier_rank). */
+  asVendor?: boolean;
+  isCompany?: boolean;
+  /** Tax ID → Odoo vat */
+  vat?: string;
+  website?: string;
+  /** Job Position → Odoo function */
+  jobPosition?: string;
+  expoPushToken?: string;
 };
 
 export async function fetchOdooPartnerTags(
@@ -4578,8 +4587,20 @@ export async function createOdooContact(
 
   const values: Record<string, unknown> = {
     name,
-    customer_rank: isChildAddress ? 0 : 1,
+    customer_rank: isChildAddress ? 0 : input.asVendor ? 0 : 1,
   };
+
+  if (input.asVendor && !isChildAddress) {
+    values.supplier_rank = 1;
+    // Keep customer_rank too so vendor still appears in Contacts list filters.
+    values.customer_rank = 1;
+  }
+
+  if (typeof input.isCompany === 'boolean') {
+    values.is_company = input.isCompany;
+  } else if (input.asVendor && !isChildAddress) {
+    values.is_company = true;
+  }
 
   if (isChildAddress) {
     values.parent_id = input.parentId;
@@ -4603,6 +4624,26 @@ export async function createOdooContact(
   const street2 = input.street2?.trim();
   if (street2) {
     values.street2 = street2;
+  }
+
+  const vat = input.vat?.trim();
+  if (vat) {
+    values.vat = vat;
+  }
+
+  const website = input.website?.trim();
+  if (website) {
+    values.website = website;
+  }
+
+  const jobPosition = input.jobPosition?.trim();
+  if (jobPosition) {
+    values.function = jobPosition;
+  }
+
+  const expoPushToken = input.expoPushToken?.trim();
+  if (expoPushToken) {
+    values.x_studio_expo_push_token = expoPushToken;
   }
 
   if (
@@ -7069,6 +7110,115 @@ export async function fetchOdooPurchaseOrderDetailBundle(
 
   const lines = await fetchOdooPurchaseOrderLines(userId, purchaseOrderId);
   return { purchaseOrder, lines };
+}
+
+export type CreatePurchaseOrderLineInput = {
+  productId: number;
+  quantity: number;
+  unitPrice: number;
+};
+
+export type CreatePurchaseOrderInput = {
+  partnerId: number;
+  /** Order Deadline → Odoo date_order */
+  dateOrder?: string;
+  /** Expected Arrival → Odoo date_planned */
+  datePlanned?: string;
+  /** Vendor Reference → Odoo partner_ref */
+  partnerRef?: string;
+  /** When true, call button_confirm after create (RFQ → Purchase Order). */
+  confirm?: boolean;
+  lines: CreatePurchaseOrderLineInput[];
+};
+
+/**
+ * Create a Purchase RFQ in Odoo (purchase.order), optionally confirm it.
+ * Mirrors the Odoo Purchase “New” form: Vendor + product lines.
+ */
+export async function createOdooPurchaseOrder(
+  userId: string,
+  input: CreatePurchaseOrderInput,
+): Promise<{ id: number; name: string; state: string }> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  if (!Number.isFinite(input.partnerId) || input.partnerId <= 0) {
+    throw new Error('A valid vendor is required.');
+  }
+  if (!input.lines.length) {
+    throw new Error('Add at least one product before saving.');
+  }
+
+  const orderLineCommands = input.lines.map(line => [
+    0,
+    0,
+    {
+      product_id: line.productId,
+      product_qty: line.quantity,
+      price_unit: line.unitPrice,
+    },
+  ]);
+
+  const values: Record<string, unknown> = {
+    partner_id: input.partnerId,
+    order_line: orderLineCommands,
+  };
+
+  const dateOrder = input.dateOrder?.trim();
+  if (dateOrder) {
+    values.date_order = dateOrder;
+  }
+  const datePlanned = input.datePlanned?.trim();
+  if (datePlanned) {
+    values.date_planned = datePlanned;
+  }
+  const partnerRef = input.partnerRef?.trim();
+  if (partnerRef) {
+    values.partner_ref = partnerRef;
+  }
+
+  const purchaseOrderId = await createOdooRecordAsUser(
+    session,
+    'purchase.order',
+    values,
+  );
+
+  let state = 'draft';
+  if (input.confirm) {
+    try {
+      await odooCallKw(session.cookie, 'purchase.order', 'button_confirm', [
+        [purchaseOrderId],
+      ]);
+      state = 'purchase';
+    } catch (error) {
+      console.warn(
+        '[purchase-orders] Created RFQ but confirm failed:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  let name = `PO/${purchaseOrderId}`;
+  try {
+    const row = await readOdooRecordAsUser<{ name: string; state: string }>(
+      session,
+      'purchase.order',
+      purchaseOrderId,
+      ['name', 'state'],
+    );
+    if (row?.name) {
+      name = String(row.name);
+    }
+    if (row?.state) {
+      state = String(row.state);
+    }
+  } catch {
+    // Keep fallback name/state.
+  }
+
+  return { id: purchaseOrderId, name, state };
 }
 
 /* ─── Sale Order (sale.order confirmed: sale / done) — view only ─── */

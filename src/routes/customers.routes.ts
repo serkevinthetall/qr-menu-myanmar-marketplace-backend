@@ -277,6 +277,13 @@ router.post('/', async (req: AuthRequest, res) => {
   const tagIdsRaw = req.body?.tagIds;
   const tagsRaw = toStringValue(req.body?.tags).trim();
   const townshipId = Number(req.body?.townshipId);
+  const asVendor = Boolean(req.body?.asVendor);
+  const isCompany =
+    req.body?.isCompany === undefined ? undefined : Boolean(req.body.isCompany);
+  const vat = toStringValue(req.body?.vat).trim();
+  const website = toStringValue(req.body?.website).trim();
+  const jobPosition = toStringValue(req.body?.jobPosition).trim();
+  const expoPushToken = toStringValue(req.body?.expoPushToken).trim();
 
   if (!name) {
     return res.status(400).json({ message: 'Name is required.' });
@@ -333,6 +340,12 @@ router.post('/', async (req: AuthRequest, res) => {
       townshipId,
       tagIds: tagIds.length > 0 ? tagIds : undefined,
       tagNames: tagIds.length > 0 ? undefined : splitTagNames(tagsRaw),
+      asVendor,
+      isCompany,
+      vat: vat || undefined,
+      website: website || undefined,
+      jobPosition: jobPosition || undefined,
+      expoPushToken: expoPushToken || undefined,
     });
 
     const contacts = await fetchOdooContacts(req.user!.id);
