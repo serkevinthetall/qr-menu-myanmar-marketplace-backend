@@ -9297,14 +9297,14 @@ export async function fetchOverviewSixMonthExport(
   };
 }
 
-/** Odoo 19.2 mrp.bom list row */
+/** Odoo 19.2 mrp.bom list row (UoM field is `uom_id`, not product_uom_id). */
 export type OdooBom = {
   id: number;
   code: string | false;
   product_tmpl_id: [number, string] | false;
   product_id: [number, string] | false;
   product_qty: number;
-  product_uom_id: [number, string] | false;
+  uom_id: [number, string] | false;
   type: string;
   company_id: [number, string] | false;
   active: boolean;
@@ -9315,7 +9315,7 @@ export type OdooBomLine = {
   bom_id: [number, string] | false;
   product_id: [number, string] | false;
   product_qty: number;
-  product_uom_id: [number, string] | false;
+  uom_id: [number, string] | false;
   sequence: number;
 };
 
@@ -9325,7 +9325,7 @@ const BOM_LIST_FIELDS = [
   'product_tmpl_id',
   'product_id',
   'product_qty',
-  'product_uom_id',
+  'uom_id',
   'type',
   'company_id',
   'active',
@@ -9336,7 +9336,7 @@ const BOM_LINE_FIELDS = [
   'bom_id',
   'product_id',
   'product_qty',
-  'product_uom_id',
+  'uom_id',
   'sequence',
 ] as const;
 

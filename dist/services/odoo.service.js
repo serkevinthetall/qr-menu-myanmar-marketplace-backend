@@ -5803,7 +5803,7 @@ const BOM_LIST_FIELDS = [
     'product_tmpl_id',
     'product_id',
     'product_qty',
-    'product_uom_id',
+    'uom_id',
     'type',
     'company_id',
     'active',
@@ -5813,7 +5813,7 @@ const BOM_LINE_FIELDS = [
     'bom_id',
     'product_id',
     'product_qty',
-    'product_uom_id',
+    'uom_id',
     'sequence',
 ];
 /**

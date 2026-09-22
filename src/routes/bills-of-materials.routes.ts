@@ -34,7 +34,7 @@ function mapBomSummary(bom: {
   product_tmpl_id: [number, string] | false;
   product_id: [number, string] | false;
   product_qty: number;
-  product_uom_id: [number, string] | false;
+  uom_id: [number, string] | false;
   type: string;
   company_id: [number, string] | false;
 }) {
@@ -46,7 +46,7 @@ function mapBomSummary(bom: {
     variantId: String(toRelationId(bom.product_id) || ''),
     variant: toRelationName(bom.product_id),
     quantity: toNumberValue(bom.product_qty),
-    unit: toRelationName(bom.product_uom_id) || 'Units',
+    unit: toRelationName(bom.uom_id) || 'Units',
     type: toStringValue(bom.type),
     typeLabel: mapBomType(toStringValue(bom.type)),
     company: toRelationName(bom.company_id),
@@ -108,7 +108,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
           productId: String(toRelationId(line.product_id) || ''),
           product: toRelationName(line.product_id),
           quantity: toNumberValue(line.product_qty),
-          unit: toRelationName(line.product_uom_id) || 'Units',
+          unit: toRelationName(line.uom_id) || 'Units',
         })),
       },
     });
@@ -185,7 +185,7 @@ router.post('/', async (req: AuthRequest, res) => {
           productId: String(toRelationId(line.product_id) || ''),
           product: toRelationName(line.product_id),
           quantity: toNumberValue(line.product_qty),
-          unit: toRelationName(line.product_uom_id) || 'Units',
+          unit: toRelationName(line.uom_id) || 'Units',
         })),
       },
     });
