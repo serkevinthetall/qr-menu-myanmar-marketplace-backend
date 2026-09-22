@@ -3097,7 +3097,7 @@ export async function fetchOdooQuotationLines(userId, quotationId) {
         ORDER_LINE_FIELDS,
     ], { order: 'sequence asc, id asc' });
 }
-export async function fetchOdooContacts(userId) {
+export async function fetchOdooContacts(userId, options) {
     const session = getOdooSession(userId);
     if (!session) {
         throw new Error('Odoo session expired. Please log in again.');
@@ -3107,13 +3107,16 @@ export async function fetchOdooContacts(userId) {
         ...Object.keys(CONTACT_CUSTOM_FIELDS),
         ...CONTACT_EXTRA_FIELDS,
     ];
+    const domain = options?.suppliersOnly
+        ? [['supplier_rank', '>', 0]]
+        : [];
     // Odoo search_read is capped per call; page until exhausted so Contacts
     // is not stuck at the old hard limit of 1000.
     const pageSize = 500;
     const maxPages = 100;
     const all = [];
     for (let page = 0; page < maxPages; page += 1) {
-        const rows = await searchReadOdooRecords(session, 'res.partner', [], fields, {
+        const rows = await searchReadOdooRecords(session, 'res.partner', domain, fields, {
             order: 'name asc',
             limit: pageSize,
             offset: page * pageSize,
@@ -3128,7 +3131,7 @@ export async function fetchOdooContacts(userId) {
     }
     return all;
 }
-/** Lean contact list for New Quotation — fewer fields, customers only. */
+/** Lean contact list for New Quotation / New Purchase — fewer fields. */
 export async function fetchOdooContactsForQuotation(userId, options) {
     const session = getOdooSession(userId);
     if (!session) {
@@ -3142,7 +3145,9 @@ export async function fetchOdooContactsForQuotation(userId, options) {
         ? Math.floor(options.offset)
         : 0;
     const q = String(options?.q ?? '').trim();
-    const domain = [['customer_rank', '>', 0]];
+    const domain = options?.suppliersOnly
+        ? [['supplier_rank', '>', 0]]
+        : [['customer_rank', '>', 0]];
     if (q) {
         const phoneClauses = [
             ['name', 'ilike', q],

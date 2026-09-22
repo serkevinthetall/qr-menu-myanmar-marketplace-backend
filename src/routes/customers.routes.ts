@@ -119,6 +119,9 @@ router.use(authMiddleware);
 router.get('/', async (req: AuthRequest, res) => {
   try {
     const lite = String(req.query.lite ?? '') === '1';
+    const suppliersOnly =
+      String(req.query.vendors ?? '') === '1' ||
+      String(req.query.suppliers ?? '') === '1';
     const limitRaw = Number(req.query.limit);
     const offsetRaw = Number(req.query.offset);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
@@ -130,8 +133,9 @@ router.get('/', async (req: AuthRequest, res) => {
           limit,
           offset,
           q: q || undefined,
+          suppliersOnly,
         })
-      : await fetchOdooContacts(req.user!.id);
+      : await fetchOdooContacts(req.user!.id, { suppliersOnly });
 
     const data = contacts.map(contact => {
       const extra: Record<string, string> = {};

@@ -5049,7 +5049,10 @@ export async function fetchOdooQuotationLines(
   );
 }
 
-export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> {
+export async function fetchOdooContacts(
+  userId: string,
+  options?: { suppliersOnly?: boolean },
+): Promise<OdooContact[]> {
   const session = getOdooSession(userId);
 
   if (!session) {
@@ -5062,6 +5065,10 @@ export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> 
     ...CONTACT_EXTRA_FIELDS,
   ];
 
+  const domain: unknown[] = options?.suppliersOnly
+    ? [['supplier_rank', '>', 0]]
+    : [];
+
   // Odoo search_read is capped per call; page until exhausted so Contacts
   // is not stuck at the old hard limit of 1000.
   const pageSize = 500;
@@ -5072,7 +5079,7 @@ export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> 
     const rows = await searchReadOdooRecords<OdooContact>(
       session,
       'res.partner',
-      [],
+      domain,
       fields,
       {
           order: 'name asc',
@@ -5095,10 +5102,16 @@ export async function fetchOdooContacts(userId: string): Promise<OdooContact[]> 
   return all;
 }
 
-/** Lean contact list for New Quotation — fewer fields, customers only. */
+/** Lean contact list for New Quotation / New Purchase — fewer fields. */
 export async function fetchOdooContactsForQuotation(
   userId: string,
-  options?: { limit?: number; offset?: number; q?: string },
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+    /** Purchase vendors (supplier_rank) instead of customers. */
+    suppliersOnly?: boolean;
+  },
 ): Promise<OdooContact[]> {
   const session = getOdooSession(userId);
 
@@ -5117,7 +5130,9 @@ export async function fetchOdooContactsForQuotation(
       : 0;
 
   const q = String(options?.q ?? '').trim();
-  const domain: unknown[] = [['customer_rank', '>', 0]];
+  const domain: unknown[] = options?.suppliersOnly
+    ? [['supplier_rank', '>', 0]]
+    : [['customer_rank', '>', 0]];
   if (q) {
     const phoneClauses: unknown[] = [
       ['name', 'ilike', q],
