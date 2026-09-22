@@ -5797,3 +5797,112 @@ export async function fetchOverviewSixMonthExport(userId, topic) {
         sheetName: 'Products',
     };
 }
+const BOM_LIST_FIELDS = [
+    'id',
+    'code',
+    'product_tmpl_id',
+    'product_id',
+    'product_qty',
+    'product_uom_id',
+    'type',
+    'company_id',
+    'active',
+];
+const BOM_LINE_FIELDS = [
+    'id',
+    'bom_id',
+    'product_id',
+    'product_qty',
+    'product_uom_id',
+    'sequence',
+];
+/**
+ * List Bills of Materials (Odoo 19.2 Manufacturing → Products → Bills of Materials).
+ */
+export async function fetchOdooBoms(userId, options) {
+    const session = getOdooSession(userId);
+    if (!session) {
+        throw new Error('Odoo session expired. Please log in again.');
+    }
+    const limit = options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+        ? Math.min(Math.floor(options.limit), 500)
+        : 200;
+    const offset = options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+        ? Math.floor(options.offset)
+        : 0;
+    const domain = [['active', '=', true]];
+    const q = String(options?.q ?? '').trim();
+    if (q) {
+        domain.push('|');
+        domain.push(['code', 'ilike', q]);
+        domain.push(['product_tmpl_id', 'ilike', q]);
+    }
+    return searchReadOdooRecords(session, 'mrp.bom', domain, [...BOM_LIST_FIELDS], { order: 'sequence asc, id desc', limit, offset });
+}
+export async function fetchOdooBomById(userId, bomId) {
+    const session = getOdooSession(userId);
+    if (!session) {
+        throw new Error('Odoo session expired. Please log in again.');
+    }
+    const rows = await searchReadOdooRecords(session, 'mrp.bom', [['id', '=', bomId]], [...BOM_LIST_FIELDS], { limit: 1 });
+    const bom = rows[0];
+    if (!bom)
+        return null;
+    const lines = await searchReadOdooRecords(session, 'mrp.bom.line', [['bom_id', '=', bomId]], [...BOM_LINE_FIELDS], { order: 'sequence asc, id asc' });
+    return { bom, lines };
+}
+/**
+ * Create a BoM (Odoo 19.2). Accepts a product.product id and maps to product_tmpl_id.
+ */
+export async function createOdooBom(userId, input) {
+    const session = getOdooSession(userId);
+    if (!session) {
+        throw new Error('Odoo session expired. Please log in again.');
+    }
+    if (!Number.isFinite(input.productId) || input.productId <= 0) {
+        throw new Error('A valid product is required.');
+    }
+    if (!input.lines.length) {
+        throw new Error('Add at least one component before saving.');
+    }
+    const productRow = await readOdooRecordAsUser(session, 'product.product', input.productId, ['product_tmpl_id']);
+    const templateId = templateIdFromProduct(productRow ?? {});
+    if (!templateId) {
+        throw new Error('Could not resolve the product template for this product.');
+    }
+    const qty = input.quantity !== undefined && Number.isFinite(input.quantity) && input.quantity > 0
+        ? input.quantity
+        : 1;
+    const bomType = (input.type || 'normal').trim() || 'normal';
+    const lineCommands = input.lines.map(line => [
+        0,
+        0,
+        {
+            product_id: line.productId,
+            product_qty: line.quantity,
+        },
+    ]);
+    const values = {
+        product_tmpl_id: templateId,
+        product_qty: qty,
+        type: bomType,
+        bom_line_ids: lineCommands,
+    };
+    const code = input.code?.trim();
+    if (code) {
+        values.code = code;
+    }
+    try {
+        const id = await createOdooRecordAsUser(session, 'mrp.bom', values);
+        return { id };
+    }
+    catch (error) {
+        // Some DBs only allow normal/phantom — retry without subcontracting type.
+        if (bomType !== 'normal' && bomType !== 'phantom') {
+            values.type = 'normal';
+            const id = await createOdooRecordAsUser(session, 'mrp.bom', values);
+            return { id };
+        }
+        throw error;
+    }
+}

@@ -14,6 +14,7 @@ import { Router } from 'express';
  *   /api/memberships/*
  *   /api/membership-coupons/*
  *   /api/purchase-orders/*
+ *   /api/bills-of-materials/*
  *   /api/sale-orders/*
  *   /api/online-orders/*
  *   /api/insights/*
@@ -36,6 +37,7 @@ import appPromoterCommissionsRoutes from './app-promoter-commissions.routes.js';
 import appPromotersRoutes from './app-promoters.routes.js';
 import authRoutes from './auth.routes.js';
 import badgesRoutes from './badges.routes.js';
+import billsOfMaterialsRoutes from './bills-of-materials.routes.js';
 import customersRoutes from './customers.routes.js';
 import insightsRoutes from './insights.routes.js';
 import inventoryRoutes from './inventory.routes.js';
@@ -71,6 +73,7 @@ router.use('/memberships', membershipsRoutes);
 router.use('/membership-coupons', membershipCouponsRoutes);
 router.use('/member-requests', memberRequestsRoutes);
 router.use('/purchase-orders', purchaseOrdersRoutes);
+router.use('/bills-of-materials', billsOfMaterialsRoutes);
 router.use('/sale-orders', saleOrdersRoutes);
 router.use('/online-orders', onlineOrdersRoutes);
 router.use('/insights', insightsRoutes);
