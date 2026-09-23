@@ -968,6 +968,266 @@ export async function updateOdooProductAppAccess(
   return fetchOdooProductAppAccess(userId, productId, { templateId: tmplId });
 }
 
+export type CreateOdooProductInput = {
+  name: string;
+  /** Odoo 19: consu=Goods, service, combo */
+  type?: 'consu' | 'service' | 'combo';
+  saleOk?: boolean;
+  purchaseOk?: boolean;
+  trackInventory?: boolean;
+  invoicePolicy?: 'order' | 'delivery';
+  listPrice?: number;
+  cost?: number;
+  categoryId?: number;
+  sku?: string;
+  barcode?: string;
+  internalNotes?: string;
+  websitePublished?: boolean;
+  websiteSequence?: number;
+  publicCategoryIds?: number[];
+  tagIds?: number[];
+  sellWhenOutOfStock?: boolean;
+  showAvailableQty?: boolean;
+  outOfStockMessage?: string;
+  longDescription?: string;
+};
+
+export type CreateOdooProductResult = {
+  id: number;
+  templateId: number;
+};
+
+/**
+ * Create a product.template (Odoo 19.2) and return the main product.product variant id.
+ * General Information + eCommerce fields; ecommerce extras soft-fail if website_sale fields missing.
+ */
+export async function createOdooProduct(
+  userId: string,
+  input: CreateOdooProductInput,
+): Promise<CreateOdooProductResult> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const name = String(input.name ?? '').trim();
+  if (!name) {
+    throw new Error('Product name is required.');
+  }
+
+  const typeRaw = String(input.type ?? 'consu').trim().toLowerCase();
+  const type: 'consu' | 'service' | 'combo' =
+    typeRaw === 'service' || typeRaw === 'combo' ? typeRaw : 'consu';
+
+  const coreValues: Record<string, unknown> = {
+    name,
+    type,
+    sale_ok: input.saleOk !== false,
+    purchase_ok: input.purchaseOk !== false,
+  };
+
+  if (type === 'consu') {
+    coreValues.is_storable = input.trackInventory !== false;
+  }
+  if (input.invoicePolicy === 'delivery' || input.invoicePolicy === 'order') {
+    coreValues.invoice_policy = input.invoicePolicy;
+  }
+  if (
+    input.listPrice !== undefined &&
+    Number.isFinite(input.listPrice) &&
+    input.listPrice >= 0
+  ) {
+    coreValues.list_price = input.listPrice;
+  }
+  if (
+    input.cost !== undefined &&
+    Number.isFinite(input.cost) &&
+    input.cost >= 0
+  ) {
+    coreValues.standard_price = input.cost;
+  }
+  if (
+    input.categoryId !== undefined &&
+    Number.isFinite(input.categoryId) &&
+    input.categoryId > 0
+  ) {
+    coreValues.categ_id = input.categoryId;
+  }
+  const sku = input.sku?.trim();
+  if (sku) {
+    coreValues.default_code = sku;
+  }
+  const barcode = input.barcode?.trim();
+  if (barcode) {
+    coreValues.barcode = barcode;
+  }
+  const notes = input.internalNotes?.trim();
+  if (notes) {
+    coreValues.description = notes;
+  }
+
+  const ecommerceValues: Record<string, unknown> = {};
+  if (typeof input.websitePublished === 'boolean') {
+    ecommerceValues.website_published = input.websitePublished;
+  }
+  if (
+    input.websiteSequence !== undefined &&
+    Number.isFinite(input.websiteSequence)
+  ) {
+    ecommerceValues.website_sequence = Math.floor(input.websiteSequence);
+  }
+  if (Array.isArray(input.publicCategoryIds)) {
+    const ids = input.publicCategoryIds.filter(
+      id => Number.isFinite(id) && id > 0,
+    );
+    ecommerceValues.public_categ_ids = [[6, 0, ids]];
+  }
+  if (Array.isArray(input.tagIds)) {
+    const ids = input.tagIds.filter(id => Number.isFinite(id) && id > 0);
+    ecommerceValues.product_tag_ids = [[6, 0, ids]];
+  }
+  if (typeof input.sellWhenOutOfStock === 'boolean') {
+    ecommerceValues.allow_out_of_stock_order = input.sellWhenOutOfStock;
+  }
+  if (typeof input.showAvailableQty === 'boolean') {
+    ecommerceValues.show_availability = input.showAvailableQty;
+  }
+  const oosMsg = input.outOfStockMessage?.trim();
+  if (oosMsg) {
+    ecommerceValues.out_of_stock_message = oosMsg;
+  }
+  const longDesc = input.longDescription?.trim();
+  if (longDesc) {
+    ecommerceValues.description_ecommerce = longDesc;
+  }
+
+  let templateId: number;
+  try {
+    templateId = await createOdooRecordAsUser(session, 'product.template', {
+      ...coreValues,
+      ...ecommerceValues,
+    });
+  } catch (fullError) {
+    // Core create first when website_sale fields are missing / invalid.
+    templateId = await createOdooRecordAsUser(session, 'product.template', coreValues);
+    if (Object.keys(ecommerceValues).length > 0) {
+      try {
+        await writeOdooRecordAsUser(
+          session,
+          'product.template',
+          templateId,
+          ecommerceValues,
+        );
+      } catch (ecomError) {
+        // Retry without description_ecommerce (field name varies by Odoo version).
+        const { description_ecommerce: _drop, ...rest } = ecommerceValues;
+        if (longDesc) {
+          rest.website_description = longDesc;
+        }
+        try {
+          if (Object.keys(rest).length > 0) {
+            await writeOdooRecordAsUser(
+              session,
+              'product.template',
+              templateId,
+              rest,
+            );
+          }
+        } catch {
+          console.warn(
+            '[products] ecommerce fields partial fail:',
+            ecomError instanceof Error ? ecomError.message : ecomError,
+            '| first create error:',
+            fullError instanceof Error ? fullError.message : fullError,
+          );
+        }
+      }
+    }
+  }
+
+  const variants = await searchReadOdooRecords<{ id: number }>(
+    session,
+    'product.product',
+    [['product_tmpl_id', '=', templateId]],
+    ['id'],
+    { limit: 1 },
+  );
+  const productId = variants[0]?.id;
+  if (!productId || !Number.isFinite(productId) || productId <= 0) {
+    throw new Error('Product created but no variant was returned.');
+  }
+
+  return { id: productId, templateId };
+}
+
+export type OdooNamedOption = { id: number; name: string };
+
+/** Internal product categories (product.category) with ids for create forms. */
+export async function fetchOdooProductCategoryOptions(
+  userId: string,
+): Promise<OdooNamedOption[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  type CatRow = {
+    id: number;
+    name?: string | false;
+    display_name?: string | false;
+  };
+  let rows: CatRow[] = [];
+  try {
+    rows = await searchReadOdooRecords<CatRow>(
+      session,
+      'product.category',
+      [],
+      ['id', 'name', 'display_name'],
+      { order: 'complete_name asc', limit: 500 },
+    );
+  } catch {
+    rows = await searchReadOdooRecords<CatRow>(
+      session,
+      'product.category',
+      [],
+      ['id', 'name'],
+      { order: 'name asc', limit: 500 },
+    );
+  }
+
+  return rows
+    .map(row => ({
+      id: row.id,
+      name: odooString(row.display_name) || odooString(row.name),
+    }))
+    .filter(row => row.id > 0 && row.name);
+}
+
+/** Website eCommerce public categories (product.public.category). */
+export async function fetchOdooPublicCategories(
+  userId: string,
+): Promise<OdooNamedOption[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const rows = await searchReadOdooRecords<{
+    id: number;
+    name: string | false;
+  }>(session, 'product.public.category', [], ['id', 'name'], {
+    order: 'sequence asc, name asc',
+    limit: 500,
+  });
+
+  return rows
+    .map(row => ({
+      id: row.id,
+      name: typeof row.name === 'string' ? row.name.trim() : '',
+    }))
+    .filter(row => row.id > 0 && row.name);
+}
+
 /* ─── Inventory: On Hand + Moves History ─── */
 
 export type OdooOnHandProduct = {

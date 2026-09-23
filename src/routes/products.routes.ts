@@ -3,12 +3,15 @@ import { Router } from 'express';
 import { authMiddleware } from '../middleware/auth.js';
 import { getOdooSession } from '../services/odoo-session.store.js';
 import {
+  createOdooProduct,
   fetchOdooProductAppAccess,
   fetchOdooProductById,
+  fetchOdooProductCategoryOptions,
   fetchOdooProductImageBase64,
   fetchOdooProductPrices,
   fetchOdooProductTags,
   fetchOdooProducts,
+  fetchOdooPublicCategories,
   resolveProductFavoriteField,
   updateOdooProductAppAccess,
   updateOdooProductFavorite,
@@ -186,6 +189,155 @@ router.get('/tags', async (req: AuthRequest, res) => {
     const message =
       error instanceof Error ? error.message : 'Failed to load product tags.';
     console.error('[products] tags', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.get('/categories', async (req: AuthRequest, res) => {
+  try {
+    const categories = await fetchOdooProductCategoryOptions(req.user!.id);
+    return res.json({
+      data: categories.map(cat => ({ id: String(cat.id), name: cat.name })),
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to load product categories.';
+    console.error('[products] categories', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.get('/public-categories', async (req: AuthRequest, res) => {
+  try {
+    const categories = await fetchOdooPublicCategories(req.user!.id);
+    return res.json({
+      data: categories.map(cat => ({ id: String(cat.id), name: cat.name })),
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to load eCommerce categories.';
+    console.error('[products] public-categories', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.post('/', async (req: AuthRequest, res) => {
+  try {
+    const body = req.body ?? {};
+    const name = String(body.name ?? '').trim();
+    if (!name) {
+      return res.status(400).json({ message: 'Product name is required.' });
+    }
+
+    const typeRaw = String(body.type ?? 'consu').trim().toLowerCase();
+    const type =
+      typeRaw === 'service' || typeRaw === 'combo'
+        ? (typeRaw as 'service' | 'combo')
+        : ('consu' as const);
+
+    const parseOptionalNumber = (value: unknown): number | undefined => {
+      if (value === undefined || value === null || value === '') return undefined;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const parseIdList = (value: unknown): number[] | undefined => {
+      if (!Array.isArray(value)) return undefined;
+      return value
+        .map(v => Number(v))
+        .filter(id => Number.isFinite(id) && id > 0);
+    };
+
+    const created = await createOdooProduct(req.user!.id, {
+      name,
+      type,
+      saleOk:
+        typeof body.saleOk === 'boolean'
+          ? body.saleOk
+          : body.sale_ok !== undefined
+            ? Boolean(body.sale_ok)
+            : undefined,
+      purchaseOk:
+        typeof body.purchaseOk === 'boolean'
+          ? body.purchaseOk
+          : body.purchase_ok !== undefined
+            ? Boolean(body.purchase_ok)
+            : undefined,
+      trackInventory:
+        typeof body.trackInventory === 'boolean'
+          ? body.trackInventory
+          : undefined,
+      invoicePolicy:
+        body.invoicePolicy === 'delivery' || body.invoicePolicy === 'order'
+          ? body.invoicePolicy
+          : undefined,
+      listPrice: parseOptionalNumber(body.listPrice ?? body.salesPrice),
+      cost: parseOptionalNumber(body.cost),
+      categoryId: parseOptionalNumber(body.categoryId),
+      sku: body.sku != null ? String(body.sku) : undefined,
+      barcode: body.barcode != null ? String(body.barcode) : undefined,
+      internalNotes:
+        body.internalNotes != null ? String(body.internalNotes) : undefined,
+      websitePublished:
+        typeof body.websitePublished === 'boolean'
+          ? body.websitePublished
+          : undefined,
+      websiteSequence: parseOptionalNumber(body.websiteSequence),
+      publicCategoryIds: parseIdList(body.publicCategoryIds),
+      tagIds: parseIdList(body.tagIds),
+      sellWhenOutOfStock:
+        typeof body.sellWhenOutOfStock === 'boolean'
+          ? body.sellWhenOutOfStock
+          : undefined,
+      showAvailableQty:
+        typeof body.showAvailableQty === 'boolean'
+          ? body.showAvailableQty
+          : undefined,
+      outOfStockMessage:
+        body.outOfStockMessage != null
+          ? String(body.outOfStockMessage)
+          : undefined,
+      longDescription:
+        body.longDescription != null ? String(body.longDescription) : undefined,
+    });
+
+    const product = await fetchOdooProductById(req.user!.id, created.id);
+    if (!product) {
+      return res.status(201).json({
+        data: {
+          id: String(created.id),
+          templateId: String(created.templateId),
+          name,
+        },
+      });
+    }
+
+    return res.status(201).json({
+      data: {
+        id: String(product.id),
+        templateId: String(created.templateId),
+        name: toStringValue(product.name),
+        sku: toStringValue(product.default_code),
+        price: toNumberValue(product.list_price),
+        cost: toNumberValue(product.standard_price),
+        stock: toNumberValue(product.qty_available),
+        active: Boolean(product.active),
+        category: toRelationName(product.categ_id),
+        unit: toRelationName(product.uom_id) || 'Units',
+        barcode: toStringValue(product.barcode),
+        description: toStringValue(product.description_sale),
+        type: toStringValue(product.type),
+        image: productImagePath(product.id),
+        favorite: false,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to create product.';
+    console.error('[products] create', message);
     return res.status(500).json({ message });
   }
 });
