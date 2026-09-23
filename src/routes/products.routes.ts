@@ -4,6 +4,9 @@ import { authMiddleware } from '../middleware/auth.js';
 import { getOdooSession } from '../services/odoo-session.store.js';
 import {
   createOdooProduct,
+  createOdooProductTagByName,
+  createOdooPublicCategoryByName,
+  fetchNextOdooWebsiteSequence,
   fetchOdooProductAppAccess,
   fetchOdooProductById,
   fetchOdooProductCategoryOptions,
@@ -193,6 +196,24 @@ router.get('/tags', async (req: AuthRequest, res) => {
   }
 });
 
+router.post('/tags', async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body?.name ?? '').trim();
+    if (!name) {
+      return res.status(400).json({ message: 'Tag name is required.' });
+    }
+    const tag = await createOdooProductTagByName(req.user!.id, name);
+    return res.status(201).json({
+      data: { id: String(tag.id), name: tag.name },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to create product tag.';
+    console.error('[products] create tag', message);
+    return res.status(500).json({ message });
+  }
+});
+
 router.get('/categories', async (req: AuthRequest, res) => {
   try {
     const categories = await fetchOdooProductCategoryOptions(req.user!.id);
@@ -221,6 +242,40 @@ router.get('/public-categories', async (req: AuthRequest, res) => {
         ? error.message
         : 'Failed to load eCommerce categories.';
     console.error('[products] public-categories', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.get('/next-website-sequence', async (req: AuthRequest, res) => {
+  try {
+    const websiteSequence = await fetchNextOdooWebsiteSequence(req.user!.id);
+    return res.json({ data: { websiteSequence } });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to load next website sequence.';
+    console.error('[products] next-website-sequence', message);
+    return res.status(500).json({ message });
+  }
+});
+
+router.post('/public-categories', async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body?.name ?? '').trim();
+    if (!name) {
+      return res.status(400).json({ message: 'Category name is required.' });
+    }
+    const category = await createOdooPublicCategoryByName(req.user!.id, name);
+    return res.status(201).json({
+      data: { id: String(category.id), name: category.name },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to create eCommerce category.';
+    console.error('[products] create public-category', message);
     return res.status(500).json({ message });
   }
 });

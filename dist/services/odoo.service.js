@@ -662,6 +662,14 @@ export async function createOdooProduct(userId, input) {
         Number.isFinite(input.websiteSequence)) {
         ecommerceValues.website_sequence = Math.floor(input.websiteSequence);
     }
+    else {
+        try {
+            ecommerceValues.website_sequence = await fetchNextOdooWebsiteSequence(userId);
+        }
+        catch {
+            // Leave unset; Odoo may assign its own default.
+        }
+    }
     if (Array.isArray(input.publicCategoryIds)) {
         const ids = input.publicCategoryIds.filter(id => Number.isFinite(id) && id > 0);
         ecommerceValues.public_categ_ids = [[6, 0, ids]];
@@ -758,6 +766,76 @@ export async function fetchOdooPublicCategories(userId) {
         name: typeof row.name === 'string' ? row.name.trim() : '',
     }))
         .filter(row => row.id > 0 && row.name);
+}
+/**
+ * Next website_sequence for a new product (max existing + 1).
+ * Odoo eCommerce uses this for shop ordering.
+ */
+export async function fetchNextOdooWebsiteSequence(userId) {
+    const session = getOdooSession(userId);
+    if (!session) {
+        throw new Error('Odoo session expired. Please log in again.');
+    }
+    try {
+        const rows = await searchReadOdooRecords(session, 'product.template', [['website_sequence', '!=', false]], ['id', 'website_sequence'], { order: 'website_sequence desc', limit: 1 });
+        const max = Number(rows[0]?.website_sequence);
+        if (Number.isFinite(max) && max >= 0) {
+            return Math.floor(max) + 1;
+        }
+    }
+    catch {
+        // Field may be missing without website_sale — fall through.
+    }
+    return 1;
+}
+/** Create (or return existing) product.tag by name. */
+export async function createOdooProductTagByName(userId, name) {
+    const session = getOdooSession(userId);
+    if (!session) {
+        throw new Error('Odoo session expired. Please log in again.');
+    }
+    const trimmed = String(name ?? '').trim();
+    if (!trimmed) {
+        throw new Error('Tag name is required.');
+    }
+    try {
+        const existingId = await findOdooProductTagIdByName(session, trimmed);
+        return { id: existingId, name: trimmed };
+    }
+    catch (error) {
+        if (!(error instanceof Error) || !/was not found/i.test(error.message)) {
+            throw error;
+        }
+    }
+    const id = await createOdooRecordAsUser(session, 'product.tag', {
+        name: trimmed,
+    });
+    return { id, name: trimmed };
+}
+/** Create (or return existing) product.public.category by name. */
+export async function createOdooPublicCategoryByName(userId, name) {
+    const session = getOdooSession(userId);
+    if (!session) {
+        throw new Error('Odoo session expired. Please log in again.');
+    }
+    const trimmed = String(name ?? '').trim();
+    if (!trimmed) {
+        throw new Error('Category name is required.');
+    }
+    const existing = await searchReadOdooRecords(session, 'product.public.category', [['name', '=ilike', trimmed]], ['id', 'name'], { limit: 10 });
+    const exact = existing.find(row => String(row.name || '')
+        .trim()
+        .toLowerCase() === trimmed.toLowerCase());
+    if (exact?.id) {
+        return {
+            id: exact.id,
+            name: typeof exact.name === 'string' ? exact.name.trim() : trimmed,
+        };
+    }
+    const id = await createOdooRecordAsUser(session, 'product.public.category', {
+        name: trimmed,
+    });
+    return { id, name: trimmed };
 }
 function parseYearMonthKey(month) {
     const match = /^(\d{4})-(\d{2})$/.exec(month.trim());
