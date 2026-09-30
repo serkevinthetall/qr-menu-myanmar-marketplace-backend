@@ -75,6 +75,8 @@ const CONTACT_BASE_FIELDS = [
   'function',
   'is_company',
   'parent_id',
+  'write_date',
+  'active',
 ];
 
 /** res.partner field linking to the custom Township model. */
@@ -990,12 +992,29 @@ export type CreateOdooProductInput = {
   showAvailableQty?: boolean;
   outOfStockMessage?: string;
   longDescription?: string;
+  /** Raw base64 (no data: prefix) for product.template image_1920. */
+  imageBase64?: string;
 };
 
 export type CreateOdooProductResult = {
   id: number;
   templateId: number;
 };
+
+/** Strip data-URL prefix and whitespace from a browser/FileReader base64 string. */
+function normalizeOdooImageBase64(raw: string | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const withoutPrefix = trimmed.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/i, '');
+  const cleaned = withoutPrefix.replace(/\s/g, '');
+  if (cleaned.length < 32) return null;
+  // Reject absurd payloads (~7.5MB decoded ≈ 10MB base64).
+  if (cleaned.length > 10 * 1024 * 1024) {
+    throw new Error('Product image is too large. Use a photo under about 7 MB.');
+  }
+  return cleaned;
+}
 
 /**
  * Create a product.template (Odoo 19.2) and return the main product.product variant id.
@@ -1064,6 +1083,10 @@ export async function createOdooProduct(
   const notes = input.internalNotes?.trim();
   if (notes) {
     coreValues.description = notes;
+  }
+  const imageBase64 = normalizeOdooImageBase64(input.imageBase64);
+  if (imageBase64) {
+    coreValues.image_1920 = imageBase64;
   }
 
   const ecommerceValues: Record<string, unknown> = {};
@@ -5425,7 +5448,13 @@ export async function fetchOdooQuotationLines(
 
 export async function fetchOdooContacts(
   userId: string,
-  options?: { suppliersOnly?: boolean },
+  options?: {
+    suppliersOnly?: boolean;
+    /** Odoo write_date watermark — only partners changed at/after this time. */
+    since?: string;
+    limit?: number;
+    offset?: number;
+  },
 ): Promise<OdooContact[]> {
   const session = getOdooSession(userId);
 
@@ -5439,13 +5468,41 @@ export async function fetchOdooContacts(
     ...CONTACT_EXTRA_FIELDS,
   ];
 
-  const domain: unknown[] = options?.suppliersOnly
-    ? [['supplier_rank', '>', 0]]
-    : [];
+  const domain: unknown[] = [];
+  if (options?.suppliersOnly) {
+    domain.push(['supplier_rank', '>', 0]);
+  }
+  const since = String(options?.since ?? '').trim();
+  if (since) {
+    domain.push(['write_date', '>=', since]);
+  }
+
+  const pageSize =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 500;
+  const startOffset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  // Single page when the client asks for limit (progressive / delta pages).
+  if (options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0) {
+    return searchReadOdooRecords<OdooContact>(
+      session,
+      'res.partner',
+      domain,
+      fields,
+      {
+        order: since ? 'write_date asc, id asc' : 'name asc',
+        limit: pageSize,
+        offset: startOffset,
+      },
+    );
+  }
 
   // Odoo search_read is capped per call; page until exhausted so Contacts
   // is not stuck at the old hard limit of 1000.
-  const pageSize = 500;
   const maxPages = 100;
   const all: OdooContact[] = [];
 
@@ -5456,9 +5513,9 @@ export async function fetchOdooContacts(
       domain,
       fields,
       {
-          order: 'name asc',
+        order: since ? 'write_date asc, id asc' : 'name asc',
         limit: pageSize,
-        offset: page * pageSize,
+        offset: startOffset + page * pageSize,
       },
     );
 
@@ -5912,6 +5969,7 @@ async function findOdooUsersForPartner(
 export async function fetchOdooPartnerPortalStatus(
   userId: string,
   partnerId: number,
+  options?: { email?: string },
 ): Promise<OdooPartnerPortalStatus> {
   const session = getOdooSession(userId);
   if (!session) {
@@ -5921,12 +5979,18 @@ export async function fetchOdooPartnerPortalStatus(
     throw new Error('Invalid contact id.');
   }
 
-  const partner = await fetchOdooContactById(userId, partnerId);
-  if (!partner) {
-    throw new Error('Contact not found.');
+  // Callers that already loaded the partner can pass email to skip a second
+  // res.partner read (detail view used to pay for partner ×2).
+  let email = '';
+  if (options && 'email' in options) {
+    email = String(options.email ?? '').trim();
+  } else {
+    const partner = await fetchOdooContactById(userId, partnerId);
+    if (!partner) {
+      throw new Error('Contact not found.');
+    }
+    email = odooString(partner.email).trim();
   }
-
-  const email = odooString(partner.email).trim();
   const hasEmail = Boolean(email);
 
   const linked = await findOdooUsersForPartner(session, partnerId);

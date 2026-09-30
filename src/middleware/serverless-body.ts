@@ -33,6 +33,24 @@ function limitToBytes(limit: string): number {
 }
 
 const DEFAULT_MAX_BYTES = limitToBytes(DEFAULT_JSON_BODY_LIMIT);
+const UPLOAD_MAX_BYTES = limitToBytes(UPLOAD_JSON_BODY_LIMIT);
+
+/** Product create / image routes may carry base64 photos. */
+function maxBytesForRequest(req: Request): number {
+  const url = `${req.originalUrl || req.url || ''}`;
+  const method = (req.method || 'GET').toUpperCase();
+  if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
+    return DEFAULT_MAX_BYTES;
+  }
+  // POST /api/products  or  POST|PUT /api/products/:id/image
+  if (
+    /\/api\/products\/?(\?|$)/.test(url) ||
+    /\/api\/products\/[^/]+\/image\/?(\?|$)/.test(url)
+  ) {
+    return UPLOAD_MAX_BYTES;
+  }
+  return DEFAULT_MAX_BYTES;
+}
 
 function isParsedJsonObject(body: unknown): body is Record<string, unknown> {
   if (!body || typeof body !== 'object') {
@@ -99,12 +117,14 @@ export function serverlessJsonBody(
   res: Response,
   next: NextFunction,
 ) {
+  const maxBytes = maxBytesForRequest(req);
+
   if (isParsedJsonObject(req.body)) {
     return next();
   }
 
   if (Buffer.isBuffer(req.body)) {
-    if (req.body.length > DEFAULT_MAX_BYTES) {
+    if (req.body.length > maxBytes) {
       return rejectTooLarge(res, next);
     }
     const parsed = parseJsonString(req.body.toString('utf8'));
@@ -116,7 +136,7 @@ export function serverlessJsonBody(
 
   const raw = readEventBody(req.apiGateway?.event);
   if (raw) {
-    if (Buffer.byteLength(raw, 'utf8') > DEFAULT_MAX_BYTES) {
+    if (Buffer.byteLength(raw, 'utf8') > maxBytes) {
       return rejectTooLarge(res, next);
     }
     const parsed = parseJsonString(raw);
@@ -135,7 +155,9 @@ export function jsonBodyParser(req: Request, res: Response, next: NextFunction) 
   }
 
   express.json({
-    limit: DEFAULT_JSON_BODY_LIMIT,
+    limit: maxBytesForRequest(req) > DEFAULT_MAX_BYTES
+      ? UPLOAD_JSON_BODY_LIMIT
+      : DEFAULT_JSON_BODY_LIMIT,
     type: ['application/json', 'application/*+json', 'text/json', '*/*'],
   })(req, res, next);
 }

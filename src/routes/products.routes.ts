@@ -357,6 +357,12 @@ router.post('/', async (req: AuthRequest, res) => {
           : undefined,
       longDescription:
         body.longDescription != null ? String(body.longDescription) : undefined,
+      imageBase64:
+        body.imageBase64 != null
+          ? String(body.imageBase64)
+          : body.image != null
+            ? String(body.image)
+            : undefined,
     });
 
     const product = await fetchOdooProductById(req.user!.id, created.id);

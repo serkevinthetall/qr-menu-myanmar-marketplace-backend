@@ -3,6 +3,15 @@ import { Router } from 'express';
 import { env } from '../config/env.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
+  CachedContactListItem,
+  invalidateContactListCache,
+  loadContactListCache,
+  maxContactWriteDate,
+  mergeAndSaveContactListCache,
+  saveContactListCache,
+  sliceContactList,
+} from '../services/contact-list-cache.store.js';
+import {
   createOdooContact,
   fetchOdooContactById,
   fetchOdooContacts,
@@ -17,6 +26,8 @@ import {
   resolvePartnerLocation,
   searchOdooContactsByPhone,
   updateOdooContact,
+  fetchOdooContactsByIds,
+  type OdooContact,
 } from '../services/odoo.service.js';
 import { splitTagNames, validateMyanmarPhone } from '../utils/myanmar-phone.js';
 import { assertPortalPassword } from '../utils/portal-password.js';
@@ -67,12 +78,32 @@ async function buildCustomerDetailResponse(
     return null;
   }
 
+  const contactEmail = toStringValue(contact.email);
+  const townshipRelationId = toRelationId(
+    contact.x_studio_many2one_field_8u9_1jp4l7r0g,
+  );
+  const hasTownshipLabel = Boolean(
+    toRelationName(contact.x_studio_many2one_field_8u9_1jp4l7r0g),
+  );
+  // Township many2one usually already carries the display name. Only hit the
+  // township model when we still need state/zip/country enrichment.
+  const needsTownshipEnrichment =
+    townshipRelationId > 0 &&
+    (!hasTownshipLabel ||
+      (!toRelationId(contact.state_id) &&
+        !toStringValue(contact.zip) &&
+        !toRelationId(contact.country_id)));
+
   const [tagNames, township, portal] = await Promise.all([
     fetchOdooPartnerCategoryNames(userId, toManyIds(contact.category_id)),
-    fetchOdooTownshipForPartner(userId, contact),
-    fetchOdooPartnerPortalStatus(userId, contactId).catch(() => ({
-      hasEmail: Boolean(toStringValue(contact.email)),
-      email: toStringValue(contact.email),
+    needsTownshipEnrichment
+      ? fetchOdooTownshipForPartner(userId, contact)
+      : Promise.resolve(null),
+    fetchOdooPartnerPortalStatus(userId, contactId, {
+      email: contactEmail,
+    }).catch(() => ({
+      hasEmail: Boolean(contactEmail),
+      email: contactEmail,
       granted: false,
       login: '',
       userId: null as number | null,
@@ -80,9 +111,6 @@ async function buildCustomerDetailResponse(
   ]);
 
   const location = resolvePartnerLocation(contact, township);
-  const townshipRelationId = toRelationId(
-    contact.x_studio_many2one_field_8u9_1jp4l7r0g,
-  );
 
   return {
     id: String(contact.id),
@@ -116,6 +144,54 @@ async function buildCustomerDetailResponse(
 
 router.use(authMiddleware);
 
+function mapOdooContactToListItem(contact: OdooContact): CachedContactListItem {
+  const extra: Record<string, string> = {};
+  for (const field of env.odooContactExtraFields) {
+    extra[field] = toStringValue(contact[field]);
+  }
+  const activeRaw = contact.active;
+  const active =
+    typeof activeRaw === 'boolean' ? activeRaw : activeRaw !== false;
+
+  return {
+    id: String(contact.id),
+    name: toStringValue(contact.name),
+    email: toStringValue(contact.email),
+    phone: toStringValue(contact.phone),
+    city: toStringValue(contact.city),
+    jobPosition: toStringValue(contact.function),
+    company: toRelationName(contact.parent_id),
+    isCompany: Boolean(contact.is_company),
+    activity: toStringValue(contact.x_studio_monthly_activity),
+    township: toRelationName(contact.x_studio_many2one_field_8u9_1jp4l7r0g),
+    status: toStringValue(contact.x_studio_customer_status),
+    lastMonthSales: toNumberValue(contact.x_studio_last_month_sales),
+    thisMonthSales: toNumberValue(contact.x_studio_this_month_sales),
+    thisMonthPercent: toNumberValue(contact.x_studio_this_month_percent),
+    lastInvoiceDate: toStringValue(contact.x_studio_last_invoice_date),
+    expoPushToken: toStringValue(contact.x_studio_expo_push_token),
+    writeDate: toStringValue(contact.write_date),
+    active,
+    extra,
+  };
+}
+
+/** Background warm of the full Redis catalog (non-blocking). */
+function warmContactListCache(userId: string, suppliersOnly: boolean) {
+  void (async () => {
+    try {
+      const rows = await fetchOdooContacts(userId, { suppliersOnly });
+      const mapped = rows.map(mapOdooContactToListItem);
+      await saveContactListCache(suppliersOnly, mapped);
+    } catch (error) {
+      console.warn(
+        '[customers] Redis warm failed:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  })();
+}
+
 router.get('/', async (req: AuthRequest, res) => {
   try {
     const lite = String(req.query.lite ?? '') === '1';
@@ -127,46 +203,16 @@ router.get('/', async (req: AuthRequest, res) => {
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
     const q = String(req.query.q ?? '').trim();
-
-    const contacts = lite
-      ? await fetchOdooContactsForQuotation(req.user!.id, {
-          limit,
-          offset,
-          q: q || undefined,
-          suppliersOnly,
-        })
-      : await fetchOdooContacts(req.user!.id, { suppliersOnly });
-
-    const data = contacts.map(contact => {
-      const extra: Record<string, string> = {};
-      if (!lite) {
-        for (const field of env.odooContactExtraFields) {
-          extra[field] = toStringValue(contact[field]);
-        }
-      }
-
-      return {
-        id: String(contact.id),
-        name: contact.name,
-        email: toStringValue(contact.email),
-        phone: toStringValue(contact.phone),
-        city: toStringValue(contact.city),
-        jobPosition: toStringValue(contact.function),
-        company: toRelationName(contact.parent_id),
-        isCompany: Boolean(contact.is_company),
-        activity: lite ? '' : toStringValue(contact.x_studio_monthly_activity),
-        township: toRelationName(contact.x_studio_many2one_field_8u9_1jp4l7r0g),
-        status: lite ? '' : toStringValue(contact.x_studio_customer_status),
-        lastMonthSales: lite ? 0 : toNumberValue(contact.x_studio_last_month_sales),
-        thisMonthSales: lite ? 0 : toNumberValue(contact.x_studio_this_month_sales),
-        thisMonthPercent: lite ? 0 : toNumberValue(contact.x_studio_this_month_percent),
-        lastInvoiceDate: lite ? '' : toStringValue(contact.x_studio_last_invoice_date),
-        expoPushToken: lite ? '' : toStringValue(contact.x_studio_expo_push_token),
-        extra,
-      };
-    });
+    const since = String(req.query.since ?? '').trim();
 
     if (lite) {
+      const contacts = await fetchOdooContactsForQuotation(req.user!.id, {
+        limit,
+        offset,
+        q: q || undefined,
+        suppliersOnly,
+      });
+      const data = contacts.map(mapOdooContactToListItem);
       const effectiveLimit = limit ?? 500;
       return res.json({
         data,
@@ -175,11 +221,106 @@ router.get('/', async (req: AuthRequest, res) => {
           offset,
           count: data.length,
           hasMore: data.length >= effectiveLimit,
+          cache: 'bypass',
         },
       });
     }
 
-    return res.json({ data });
+    const cached = await loadContactListCache(suppliersOnly);
+
+    // Incremental sync: always ask Odoo for the small delta, then merge into Redis.
+    if (since) {
+      const rows = await fetchOdooContacts(req.user!.id, {
+        suppliersOnly,
+        since,
+        limit,
+        offset,
+      });
+      const data = rows.map(mapOdooContactToListItem);
+      void mergeAndSaveContactListCache(suppliersOnly, data);
+      const effectiveLimit = limit ?? data.length;
+      return res.json({
+        data,
+        meta: {
+          limit: effectiveLimit,
+          offset,
+          count: data.length,
+          hasMore: limit !== undefined ? data.length >= effectiveLimit : false,
+          since,
+          cache: cached ? 'merge' : 'miss',
+        },
+      });
+    }
+
+    // Paged list from Redis when available.
+    if (limit !== undefined) {
+      if (cached?.contacts.length) {
+        const sliced = sliceContactList(cached.contacts, limit, offset);
+        return res.json({
+          data: sliced.data,
+          meta: {
+            limit,
+            offset,
+            count: sliced.data.length,
+            hasMore: sliced.hasMore,
+            since: cached.since || maxContactWriteDate(cached.contacts),
+            cache: 'hit',
+          },
+        });
+      }
+
+      const rows = await fetchOdooContacts(req.user!.id, {
+        suppliersOnly,
+        limit,
+        offset,
+      });
+      const data = rows.map(mapOdooContactToListItem);
+      // First page miss → warm full catalog in Redis for later hits.
+      if (offset === 0) {
+        warmContactListCache(req.user!.id, suppliersOnly);
+      }
+      return res.json({
+        data,
+        meta: {
+          limit,
+          offset,
+          count: data.length,
+          hasMore: data.length >= limit,
+          since: null,
+          cache: 'miss',
+        },
+      });
+    }
+
+    // Full list (no limit): Redis first.
+    if (cached?.contacts.length) {
+      return res.json({
+        data: cached.contacts,
+        meta: {
+          limit: cached.contacts.length,
+          offset: 0,
+          count: cached.contacts.length,
+          hasMore: false,
+          since: cached.since || maxContactWriteDate(cached.contacts),
+          cache: 'hit',
+        },
+      });
+    }
+
+    const rows = await fetchOdooContacts(req.user!.id, { suppliersOnly });
+    const data = rows.map(mapOdooContactToListItem);
+    await saveContactListCache(suppliersOnly, data);
+    return res.json({
+      data,
+      meta: {
+        limit: data.length,
+        offset: 0,
+        count: data.length,
+        hasMore: false,
+        since: maxContactWriteDate(data),
+        cache: 'miss',
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load contacts.';
@@ -352,10 +493,14 @@ router.post('/', async (req: AuthRequest, res) => {
       expoPushToken: expoPushToken || undefined,
     });
 
-    const contacts = await fetchOdooContacts(req.user!.id);
-    const contact = contacts.find(item => item.id === created.id);
+    await invalidateContactListCache();
+
+    const createdRows = await fetchOdooContactsByIds(req.user!.id, [created.id]);
+    const contact = createdRows[0];
 
     if (!contact) {
+      warmContactListCache(req.user!.id, false);
+      if (asVendor) warmContactListCache(req.user!.id, true);
       return res.status(201).json({
         data: {
           id: String(created.id),
@@ -374,37 +519,18 @@ router.post('/', async (req: AuthRequest, res) => {
           thisMonthPercent: 0,
           lastInvoiceDate: '',
           expoPushToken: '',
+          writeDate: '',
+          active: true,
           extra: {},
         },
       });
     }
 
-    const extra: Record<string, string> = {};
-    for (const field of env.odooContactExtraFields) {
-      extra[field] = toStringValue(contact[field]);
-    }
+    const mapped = mapOdooContactToListItem(contact);
+    warmContactListCache(req.user!.id, false);
+    if (asVendor) warmContactListCache(req.user!.id, true);
 
-    return res.status(201).json({
-      data: {
-        id: String(contact.id),
-        name: contact.name,
-        email: toStringValue(contact.email),
-        phone: toStringValue(contact.phone),
-        city: toStringValue(contact.city),
-        jobPosition: toStringValue(contact.function),
-        company: toRelationName(contact.parent_id),
-        isCompany: Boolean(contact.is_company),
-        activity: toStringValue(contact.x_studio_monthly_activity),
-        township: toRelationName(contact.x_studio_many2one_field_8u9_1jp4l7r0g),
-        status: toStringValue(contact.x_studio_customer_status),
-        lastMonthSales: toNumberValue(contact.x_studio_last_month_sales),
-        thisMonthSales: toNumberValue(contact.x_studio_this_month_sales),
-        thisMonthPercent: toNumberValue(contact.x_studio_this_month_percent),
-        lastInvoiceDate: toStringValue(contact.x_studio_last_invoice_date),
-        expoPushToken: toStringValue(contact.x_studio_expo_push_token),
-        extra,
-      },
-    });
+    return res.status(201).json({ data: mapped });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to create contact.';
@@ -632,6 +758,9 @@ router.patch('/:id', async (req: AuthRequest, res) => {
       townshipId,
       tagIds,
     });
+
+    await invalidateContactListCache();
+    warmContactListCache(req.user!.id, false);
 
     const data = await buildCustomerDetailResponse(req.user!.id, contactId);
     if (!data) {
