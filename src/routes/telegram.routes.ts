@@ -67,6 +67,12 @@ router.get('/cron/daily-report', async (req, res) => {
           date: result.stats.reportDateLabel,
           installedToday: result.stats.installedToday,
           totalInstalledUsers: result.stats.totalInstalledUsers,
+          appOrders: {
+            available: result.stats.appOrders.available,
+            totalOrders: result.stats.appOrders.totalOrders,
+            totalSpending: result.stats.appOrders.totalSpending,
+            customers: result.stats.appOrders.customers,
+          },
         },
       },
     });
@@ -103,9 +109,9 @@ router.post('/setup-webhook', async (req: AuthRequest, res) => {
 });
 
 /**
- * Manual trigger for the daily App Install Telegram report.
+ * Manual trigger for the daily App Install + App Order Telegram report.
  */
-router.post('/daily-report', async (_req: AuthRequest, res) => {
+router.post('/daily-report', async (req: AuthRequest, res) => {
   try {
     if (!env.telegramDailyReportEnabled) {
       return res.status(503).json({
@@ -114,7 +120,9 @@ router.post('/daily-report', async (_req: AuthRequest, res) => {
       });
     }
 
-    const result = await sendAppInstallDailyReport();
+    const result = await sendAppInstallDailyReport(new Date(), {
+      odooUserId: req.user?.id,
+    });
     return res.json({
       data: {
         sent: result.sent,
@@ -124,6 +132,12 @@ router.post('/daily-report', async (_req: AuthRequest, res) => {
           date: result.stats.reportDateLabel,
           installedToday: result.stats.installedToday,
           totalInstalledUsers: result.stats.totalInstalledUsers,
+          appOrders: {
+            available: result.stats.appOrders.available,
+            totalOrders: result.stats.appOrders.totalOrders,
+            totalSpending: result.stats.appOrders.totalSpending,
+            customers: result.stats.appOrders.customers,
+          },
         },
         preview: result.message,
       },

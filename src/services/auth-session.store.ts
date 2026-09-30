@@ -6,7 +6,7 @@ import {
   isMongoConfigured,
 } from '../config/mongo.js';
 import { AuthSessionModel } from '../models/auth-session.model.js';
-import type { OdooSession } from './odoo-session.store.js';
+import { setOdooSession, type OdooSession } from './odoo-session.store.js';
 
 const KEY_PREFIX = 'qr-shop:auth-session:';
 
@@ -340,4 +340,51 @@ export function authSessionToOdoo(
   row: StoredAuthSession,
 ): OdooSession {
   return toOdooSession(row);
+}
+
+/**
+ * Hydrate the newest non-expired web auth session into the in-memory Odoo
+ * session map so background jobs (Telegram cron) can call Odoo without a JWT.
+ * Returns the ERP user id, or null when nothing usable is available.
+ */
+export async function hydrateLatestWebOdooSession(): Promise<string | null> {
+  if (!isMongoConfigured()) {
+    return null;
+  }
+
+  try {
+    await connectMongo();
+    const row = await AuthSessionModel.findOne({
+      surface: 'web',
+      expiresAt: { $gt: new Date() },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!row?.userId || !row.odooCookie || !row.odooUid) {
+      return null;
+    }
+
+    const stored: StoredAuthSession = {
+      sessionId: row.sessionId,
+      userId: row.userId,
+      email: row.email,
+      name: row.name,
+      odooCookie: row.odooCookie,
+      odooUid: row.odooUid,
+      surface: 'web',
+      expiresAt: new Date(row.expiresAt).getTime(),
+      createdAt: new Date(row.createdAt).getTime(),
+    };
+
+    const { setOdooSession } = await import('./odoo-session.store.js');
+    setOdooSession(stored.userId, authSessionToOdoo(stored));
+    return stored.userId;
+  } catch (error) {
+    console.error(
+      '[auth-session] hydrateLatestWebOdooSession failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
 }

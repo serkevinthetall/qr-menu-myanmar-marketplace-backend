@@ -13,8 +13,7 @@ async function runDailyReportJob(label: string): Promise<void> {
     const result = await sendAppInstallDailyReport();
     console.log(
       `[telegram-daily-report] Sent to ${result.sent.length} chat(s)` +
-        (result.failed.length ? `, failed ${result.failed.length}` : '') +
-        (result.geminiUsed ? ', Gemini commentary on' : ', Gemini skipped'),
+        (result.failed.length ? `, failed ${result.failed.length}` : ''),
     );
     for (const fail of result.failed) {
       console.error(

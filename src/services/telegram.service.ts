@@ -31,7 +31,6 @@ export function buildTelegramBotStatusReply(): string {
   const cron = env.isVercel
     ? 'Vercel Cron ~16:30 Asia/Yangon (10:00 UTC)'
     : `${env.telegramReportCron || '30 16 * * *'} (${env.telegramReportTz || 'Asia/Yangon'})`;
-  const gemini = env.geminiApiKey ? 'ON' : 'OFF';
   const mongo = isMongoConfigured() ? 'ON' : 'OFF';
   const chats = env.telegramChatIds.length;
   const webhook = env.telegramWebhookUrl ? 'ON' : env.isVercel ? 'set TELEGRAM_WEBHOOK_URL' : 'polling';
@@ -41,11 +40,10 @@ export function buildTelegramBotStatusReply(): string {
     '',
     `Schedule: ${cron}`,
     `Allowlist chats: ${chats}`,
-    `Gemini commentary: ${gemini}`,
     `Mongo (app installs): ${mongo}`,
     `Inbound: ${webhook}`,
     '',
-    'You will get the daily App Install report automatically.',
+    'You will get the daily App Install + App Order report automatically.',
     'Commands: /start  /status',
   ].join('\n');
 }
