@@ -1248,7 +1248,7 @@ export async function fetchOdooPublicCategories(
     name: string | false;
   }>(session, 'product.public.category', [], ['id', 'name'], {
     order: 'sequence asc, name asc',
-    limit: 500,
+          limit: 500,
   });
 
   return rows
@@ -5746,13 +5746,70 @@ async function setOdooUserPassword(
   if (!password) {
     throw new Error('Password is required.');
   }
-  await odooCallKw(
-    session.cookie,
-    'res.users',
-    'write',
-    [[userId], { password }],
-    { context: { no_reset_password: true } },
-  );
+
+  const writeArgs: unknown[] = [[userId], { password }];
+  const writeKw = { context: { no_reset_password: true } };
+
+  const isAccessDenied = (error: unknown): boolean => {
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return (
+      message.includes('access denied') ||
+      message.includes('access error') ||
+      message.includes('not allowed') ||
+      message.includes('forbidden') ||
+      message.includes('security') ||
+      message.includes('permission') ||
+      message.includes('you are not allowed')
+    );
+  };
+
+  try {
+    await odooCallKw(
+      session.cookie,
+      'res.users',
+      'write',
+      writeArgs,
+      writeKw,
+    );
+    return;
+  } catch (error) {
+    // Accounting / non-Settings users often cannot write passwords. Fall back
+    // to a privileged service uid + API key when configured.
+    if (
+      isAccessDenied(error) &&
+      env.odooApiKey &&
+      env.odooServiceUid > 0
+    ) {
+      try {
+        await odooExecuteKw(
+          env.odooServiceUid,
+          'res.users',
+          'write',
+          writeArgs,
+          writeKw,
+        );
+        return;
+      } catch (elevatedError) {
+        const elevatedMessage =
+          elevatedError instanceof Error
+            ? elevatedError.message
+            : String(elevatedError);
+        throw new Error(
+          `Failed to set portal password (service account): ${elevatedMessage}`,
+        );
+      }
+    }
+
+    if (isAccessDenied(error)) {
+      throw new Error(
+        'Your Odoo user cannot set portal passwords (Accounting needs Settings access or ODOO_SERVICE_UID + ODOO_API_KEY on the server).',
+      );
+    }
+
+    throw error instanceof Error
+      ? error
+      : new Error('Failed to set portal password.');
+  }
 }
 
 /**

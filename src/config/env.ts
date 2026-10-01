@@ -125,6 +125,16 @@ export const env = {
   odooUrl: required('ODOO_URL').replace(/\/$/, ''),
   odooDb: required('ODOO_DB'),
   odooApiKey: process.env.ODOO_API_KEY ?? '',
+  /**
+   * Privileged Odoo user id for actions accountants cannot do with their own
+   * login (e.g. set portal passwords). Must match the user that owns ODOO_API_KEY.
+   */
+  odooServiceUid: (() => {
+    const raw = (process.env.ODOO_SERVICE_UID ?? '').trim();
+    if (!raw) return 0;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  })(),
   odooContactExtraFields: (process.env.ODOO_CONTACT_EXTRA_FIELDS ?? '')
     .split(',')
     .map(field => field.trim())
