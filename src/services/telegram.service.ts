@@ -181,14 +181,17 @@ export async function telegramSetWebhook(params?: {
   }
 
   const secretToken = (params?.secretToken || env.telegramWebhookSecret).trim();
+  if (!secretToken) {
+    throw new Error(
+      'TELEGRAM_WEBHOOK_SECRET is required before registering the webhook.',
+    );
+  }
   const body: Record<string, unknown> = {
     url,
     allowed_updates: ['message'],
     drop_pending_updates: true,
+    secret_token: secretToken,
   };
-  if (secretToken) {
-    body.secret_token = secretToken;
-  }
 
   const response = await fetch(telegramApiUrl('setWebhook'), {
     method: 'POST',
@@ -216,9 +219,9 @@ export async function telegramDeleteWebhook(): Promise<void> {
 export function isValidTelegramWebhookSecret(
   headerValue: string | undefined,
 ): boolean {
+  // Same posture as cron: reject when secret is not configured.
   if (!env.telegramWebhookSecret) {
-    // If no secret configured, accept (not recommended for production).
-    return true;
+    return false;
   }
   return headerValue === env.telegramWebhookSecret;
 }
