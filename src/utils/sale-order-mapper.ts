@@ -24,6 +24,9 @@ export function mapSaleOrderSummary(order: OdooSaleOrder) {
     phoneNumber: toStudioPhoneNumber(order),
     // Studio Sale Person Name only — do not fall back to user_id / x_studio_salesperson.
     salePersonName: toStringValue(order.x_studio_sale_person_name),
+    activityNote: toStringValue(order.activity_summary),
+    activityState: toStringValue(order.activity_state),
+    activityDeadline: toStringValue(order.activity_date_deadline),
   };
 }
 

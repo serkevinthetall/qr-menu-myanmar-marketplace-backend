@@ -22,10 +22,16 @@ import {
   toNumberValue,
   toStringValue,
 } from '../../utils/quotation-mapper.js';
+import { mountSaleOrderChatterRoutes } from '../sale-order-chatter.routes.js';
 
 const router = Router();
 
 router.use(authMiddleware);
+
+mountSaleOrderChatterRoutes(router, {
+  logLabel: 'app/quotations',
+  idLabel: 'quotation',
+});
 
 router.get('/payment-methods', async (req: AuthRequest, res) => {
   try {

@@ -22,10 +22,16 @@ import {
   mapSaleOrderDetail,
   mapSaleOrderSummary,
 } from '../utils/sale-order-mapper.js';
+import { mountSaleOrderChatterRoutes } from './sale-order-chatter.routes.js';
 
 const router = Router();
 
 router.use(authMiddleware);
+
+mountSaleOrderChatterRoutes(router, {
+  logLabel: 'online-orders',
+  idLabel: 'app order',
+});
 
 router.get('/unread-count', async (req: AuthRequest, res) => {
   try {

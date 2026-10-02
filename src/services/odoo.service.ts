@@ -2088,6 +2088,10 @@ export type OdooQuotation = {
   x_studio_phonenumber?: string | false;
   x_studio_phonenumber_1?: string | false;
   x_studio_sale_person_name?: string | false;
+  /** Next scheduled activity summary (mail.activity mixin). */
+  activity_summary?: string | false;
+  activity_state?: string | false;
+  activity_date_deadline?: string | false;
 };
 
 export type OdooQuotationDetail = OdooQuotation & {
@@ -2157,6 +2161,9 @@ const QUOTATION_LIST_FIELDS = [
   'x_studio_phonenumber_1',
   'x_studio_phonenumber',
   'x_studio_sale_person_name',
+  'activity_summary',
+  'activity_state',
+  'activity_date_deadline',
 ];
 
 const QUOTATION_DETAIL_FIELDS = [
@@ -7746,6 +7753,10 @@ export type OdooSaleOrder = {
   x_studio_sale_person_name?: string | false;
   /** Studio many2one Salesperson (`res.users`) — used for App Order matching. */
   x_studio_salesperson?: [number, string] | false;
+  /** Next scheduled activity summary (mail.activity mixin). */
+  activity_summary?: string | false;
+  activity_state?: string | false;
+  activity_date_deadline?: string | false;
 };
 
 export type OdooSaleOrderDetail = OdooSaleOrder & {
@@ -7783,6 +7794,9 @@ const SALE_ORDER_LIST_FIELDS = [
   'x_studio_phonenumber',
   'x_studio_sale_person_name',
   'x_studio_salesperson',
+  'activity_summary',
+  'activity_state',
+  'activity_date_deadline',
 ];
 
 const SALE_ORDER_DETAIL_FIELDS = [

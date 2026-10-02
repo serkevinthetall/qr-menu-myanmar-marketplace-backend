@@ -17,10 +17,16 @@ import {
   mapSaleOrderDetail,
   mapSaleOrderSummary,
 } from '../utils/sale-order-mapper.js';
+import { mountSaleOrderChatterRoutes } from './sale-order-chatter.routes.js';
 
 const router = Router();
 
 router.use(authMiddleware);
+
+mountSaleOrderChatterRoutes(router, {
+  logLabel: 'sale-orders',
+  idLabel: 'sale order',
+});
 
 router.get('/', async (req: AuthRequest, res) => {
   try {

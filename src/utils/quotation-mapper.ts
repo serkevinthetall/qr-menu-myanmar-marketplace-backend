@@ -55,6 +55,9 @@ export function mapQuotationSummary(quotation: OdooQuotation) {
     paymentMethod: toRelationName(quotation.preferred_payment_method_line_id),
     phoneNumber: toStudioPhoneNumber(quotation),
     salePersonName: toStringValue(quotation.x_studio_sale_person_name),
+    activityNote: toStringValue(quotation.activity_summary),
+    activityState: toStringValue(quotation.activity_state),
+    activityDeadline: toStringValue(quotation.activity_date_deadline),
   };
 }
 

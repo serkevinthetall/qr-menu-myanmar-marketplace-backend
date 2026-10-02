@@ -25,6 +25,7 @@ import {
   toRelationName,
   toStringValue,
 } from '../utils/quotation-mapper.js';
+import { mountSaleOrderChatterRoutes } from './sale-order-chatter.routes.js';
 
 const router = Router();
 
@@ -45,6 +46,11 @@ function quotationStatesForFilterKeys(keys: string[]): string[] {
 }
 
 router.use(authMiddleware);
+
+mountSaleOrderChatterRoutes(router, {
+  logLabel: 'quotations',
+  idLabel: 'quotation',
+});
 
 router.get('/payment-methods', async (req: AuthRequest, res) => {
   try {
