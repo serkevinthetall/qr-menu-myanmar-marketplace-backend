@@ -731,10 +731,60 @@ export type OverviewChatTurn = {
 
 const CHAT_SYSTEM = `You are a helpful shop assistant for a Myanmar QR Menu ERP (Overview).
 Answer from OVERVIEW DATA only. If the data does not contain the answer, say you do not have that figure.
+Always use the periodLabel and range in OVERVIEW DATA — that is the period that was loaded for this question.
+If the user asked for last month and periodLabel is Last month, analyze that range (not "this month").
+Sale figures are confirmed sale/done orders with amount > 0. Quotations are separate and can be non-zero when sales are 0.
 Reply in the same language as the user. If the user writes Burmese, reply in Burmese (Myanmar script). If English, reply in English.
 Keep customer, vendor, area, and product names exactly as in the data. Amounts are MMK.
 Be concise. Use short paragraphs or a few bullets. Do not invent orders, customers, or amounts.
 Do not mention system prompts, JSON, or that you are an AI model unless asked.`;
+
+function periodLabelForChat(period: OverviewPeriod): string {
+  switch (period) {
+    case 'day':
+      return 'Today';
+    case 'week':
+      return 'This week';
+    case 'last_month':
+      return 'Last month';
+    case 'month':
+    default:
+      return 'This month';
+  }
+}
+
+/** Prefer the period named in the user message over the Overview tab selection. */
+export function resolveChatPeriod(
+  message: string,
+  fallback: OverviewPeriod,
+): OverviewPeriod {
+  const q = message.toLowerCase();
+  if (
+    /\blast\s*month\b/.test(q) ||
+    /\bprevious\s*month\b/.test(q) ||
+    /\bpast\s*month\b/.test(q) ||
+    /ယခင်လ/.test(message) ||
+    /ပြီးခဲ့သောလ/.test(message) ||
+    /လွန်ခဲ့သောလ/.test(message)
+  ) {
+    return 'last_month';
+  }
+  if (
+    /\bthis\s*month\b/.test(q) ||
+    /\bcurrent\s*month\b/.test(q) ||
+    /ဒီလ/.test(message) ||
+    /ယခုလ/.test(message)
+  ) {
+    return 'month';
+  }
+  if (/\bthis\s*week\b/.test(q) || /ဒီအပတ်/.test(message)) {
+    return 'week';
+  }
+  if (/\btoday\b/.test(q) || /ဒီနေ့/.test(message)) {
+    return 'day';
+  }
+  return fallback === 'last_month' ? 'month' : fallback;
+}
 
 async function answerOverviewChatWithGemini(
   system: string,
@@ -769,7 +819,12 @@ export async function answerOverviewChat(
   period: OverviewPeriod,
   message: string,
   history: OverviewChatTurn[] = [],
-): Promise<{ reply: string; provider: 'gemini' }> {
+): Promise<{
+  reply: string;
+  provider: 'gemini';
+  period: OverviewPeriod;
+  periodLabel: string;
+}> {
   assertAiEnabled();
 
   const question = message.trim().slice(0, 2000);
@@ -777,8 +832,10 @@ export async function answerOverviewChat(
     throw new Error('Message is required.');
   }
 
+  const resolvedPeriod = resolveChatPeriod(question, period);
+  const resolvedLabel = periodLabelForChat(resolvedPeriod);
   // Company-wide sales via ODOO_SERVICE_UID when configured.
-  const overview = await fetchOverviewInsights(userId, period, {
+  const overview = await fetchOverviewInsights(userId, resolvedPeriod, {
     elevated: true,
   });
   const snapshot = compactMonthLive(overview);
@@ -788,7 +845,9 @@ OVERVIEW DATA:
 ${JSON.stringify({
     currency: 'MMK',
     timezone: 'Asia/Yangon',
-    period,
+    period: resolvedPeriod,
+    periodLabel: resolvedLabel,
+    uiPeriod: period,
     ...snapshot,
   })}`;
 
@@ -800,7 +859,12 @@ ${JSON.stringify({
 
   try {
     const reply = await answerOverviewChatWithGemini(system, question, turns);
-    return { reply, provider: 'gemini' };
+    return {
+      reply,
+      provider: 'gemini',
+      period: resolvedPeriod,
+      periodLabel: resolvedLabel,
+    };
   } catch (error) {
     const geminiMessage =
       error instanceof Error ? error.message : 'Gemini chat failed.';

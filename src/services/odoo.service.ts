@@ -8316,7 +8316,7 @@ export async function fetchOdooOnlineOrderDetailBundle(
 
 /* ─── Overview / Insights dashboard ─── */
 
-export type OverviewPeriod = 'day' | 'week' | 'month';
+export type OverviewPeriod = 'day' | 'week' | 'month' | 'last_month';
 
 type OverviewPartnerRow = {
   id: number;
@@ -8419,13 +8419,24 @@ function buildPeriodWindow(period: OverviewPeriod, now = new Date()) {
     return { from, to, prevFrom, prevTo, buckets, bucketMode: 'day' as const };
   }
 
-  // month: current calendar month in Yangon
+  // Calendar months in Yangon (this month or last month).
   const monthStartUtc = Date.UTC(y, m - 1, 1) - 6.5 * 60 * 60 * 1000;
   const nextMonthStartUtc = Date.UTC(y, m, 1) - 6.5 * 60 * 60 * 1000;
-  const from = new Date(monthStartUtc);
-  const to = new Date(nextMonthStartUtc);
   const prevMonthStartUtc = Date.UTC(y, m - 2, 1) - 6.5 * 60 * 60 * 1000;
-  const prevFrom = new Date(prevMonthStartUtc);
+  const prevPrevMonthStartUtc = Date.UTC(y, m - 3, 1) - 6.5 * 60 * 60 * 1000;
+
+  const from =
+    period === 'last_month'
+      ? new Date(prevMonthStartUtc)
+      : new Date(monthStartUtc);
+  const to =
+    period === 'last_month'
+      ? new Date(monthStartUtc)
+      : new Date(nextMonthStartUtc);
+  const prevFrom =
+    period === 'last_month'
+      ? new Date(prevPrevMonthStartUtc)
+      : new Date(prevMonthStartUtc);
   const prevTo = from;
   const buckets: string[] = [];
   const cursor = new Date(from.getTime());

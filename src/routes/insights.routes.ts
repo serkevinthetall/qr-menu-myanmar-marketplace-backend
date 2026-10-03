@@ -29,7 +29,12 @@ router.use(authMiddleware);
 
 function parsePeriod(raw: unknown): OverviewPeriod {
   const value = String(raw ?? 'month').trim().toLowerCase();
-  if (value === 'day' || value === 'week' || value === 'month') {
+  if (
+    value === 'day' ||
+    value === 'week' ||
+    value === 'month' ||
+    value === 'last_month'
+  ) {
     return value;
   }
   return 'month';
