@@ -20,6 +20,8 @@ const REV_KEY = 'qr-shop:app-order-notify:rev';
 const EVENTS_KEY = 'qr-shop:app-order-notify:events';
 const PENDING_KEY = 'qr-shop:app-order-notify:pending';
 const ACTIVE_KEY = 'qr-shop:app-order-notify:active';
+/** Pub/Sub channel — webhook publishes, SSE subscribers receive instantly. */
+const CHANNEL = 'qr-shop:app-order-notify:ch';
 const MAX_EVENTS = 100;
 const REDIS_RETRY_MS = 60_000;
 
@@ -226,6 +228,7 @@ export async function recordAppOrderNotifyEvent(input: {
         };
         await backend.client.lpush(EVENTS_KEY, JSON.stringify(event));
         await backend.client.ltrim(EVENTS_KEY, 0, MAX_EVENTS - 1);
+        await publishAppOrderNotify(event);
         return event;
       }
 
@@ -243,6 +246,7 @@ export async function recordAppOrderNotifyEvent(input: {
       };
       await backend.client.lPush(EVENTS_KEY, JSON.stringify(event));
       await backend.client.lTrim(EVENTS_KEY, 0, MAX_EVENTS - 1);
+      await publishAppOrderNotify(event);
       return event;
     }
   } catch (error) {
@@ -272,7 +276,80 @@ export async function recordAppOrderNotifyEvent(input: {
   };
   store.events = [event, ...store.events].slice(0, MAX_EVENTS);
   await writeFileStore(store);
+  await publishAppOrderNotify(event);
   return event;
+}
+
+/** Push to all SSE listeners (Redis Pub/Sub). Call after unread is stored. */
+export async function publishAppOrderNotify(
+  event: AppOrderNotifyEvent,
+): Promise<void> {
+  const payload = JSON.stringify(event);
+  try {
+    const backend = await getRedisBackend();
+    if (backend?.kind === 'upstash') {
+      await backend.client.publish(CHANNEL, payload);
+      return;
+    }
+    if (backend?.kind === 'tcp') {
+      await backend.client.publish(CHANNEL, payload);
+      return;
+    }
+  } catch (error) {
+    console.error(
+      '[app-order-notify] publish failed:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+/**
+ * Subscribe to live App Order notifies (dedicated TCP connection).
+ * Returns an unsubscribe fn. Falls back to null when only REST Redis is available.
+ */
+export async function subscribeAppOrderNotify(
+  onEvent: (event: AppOrderNotifyEvent) => void,
+): Promise<(() => Promise<void>) | null> {
+  const url = (process.env.REDIS_URL || '').trim();
+  if (!url) return null;
+
+  try {
+    const sub = createClient({
+      url,
+      socket: {
+        connectTimeout: 8_000,
+        reconnectStrategy: retries => Math.min(retries * 200, 2_000),
+      },
+    });
+    sub.on('error', err => {
+      console.error('[app-order-notify] subscribe error:', err.message);
+    });
+    await sub.connect();
+    await sub.subscribe(CHANNEL, message => {
+      try {
+        const parsed = parseEvent(
+          typeof message === 'string' ? JSON.parse(message) : message,
+        );
+        if (parsed) onEvent(parsed);
+      } catch {
+        // ignore bad payloads
+      }
+    });
+    return async () => {
+      try {
+        await sub.unsubscribe(CHANNEL);
+        await sub.quit();
+      } catch {
+        // ignore
+      }
+    };
+  } catch (error) {
+    console.error(
+      '[app-order-notify] subscribe connect failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
 }
 
 export async function seedPendingAppOrderIds(orderIds: number[]): Promise<void> {

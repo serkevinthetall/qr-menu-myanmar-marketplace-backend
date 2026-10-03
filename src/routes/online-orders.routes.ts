@@ -7,6 +7,7 @@ import {
   isAppOrderNotifyActive,
   listAppOrderNotifyEventsSince,
   seedPendingAppOrderIds,
+  subscribeAppOrderNotify,
   waitForAppOrderNotifyEvents,
 } from '../services/app-order-notify.store.js';
 import {
@@ -84,8 +85,7 @@ router.get('/notify-feed', async (req: AuthRequest, res) => {
 });
 
 /**
- * Long-poll: hold until Redis revision advances (Odoo webhook) or timeout.
- * Website keeps one open request — not a busy Odoo loop.
+ * Long-poll fallback (kept for older clients). Prefer notify-stream (SSE).
  * GET /api/online-orders/notify-wait?since=<revision>&timeout=8000
  */
 router.get('/notify-wait', async (req: AuthRequest, res) => {
@@ -110,6 +110,118 @@ router.get('/notify-wait', async (req: AuthRequest, res) => {
       error instanceof Error ? error.message : 'Failed to wait for notify.';
     console.error('[online-orders] notify-wait', message);
     return res.status(500).json({ message });
+  }
+});
+
+/**
+ * Server-Sent Events push stream.
+ * Odoo webhook → Redis unread + PUBLISH → this stream → browser popup.
+ * GET /api/online-orders/notify-stream?access_token=…&since=0
+ */
+router.get('/notify-stream', async (req: AuthRequest, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof (res as { flushHeaders?: () => void }).flushHeaders === 'function') {
+    (res as { flushHeaders: () => void }).flushHeaders();
+  }
+
+  let closed = false;
+  let lastRevision = Number(req.query.since);
+  if (!Number.isFinite(lastRevision) || lastRevision < 0) lastRevision = 0;
+
+  const send = async (eventName: string, data: unknown) => {
+    if (closed) return;
+    res.write(`event: ${eventName}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const pushEvent = async (event: {
+    revision: number;
+    id: number;
+    number: string;
+    customer: string;
+    total: number;
+    at: string;
+  }) => {
+    if (event.revision <= lastRevision) return;
+    lastRevision = event.revision;
+    const readIds = await listReadAppOrderIds();
+    const unreadCount = await countPendingUnreadAppOrders(readIds);
+    await send('app-order', {
+      revision: event.revision,
+      id: String(event.id),
+      number: event.number,
+      customer: event.customer,
+      total: event.total,
+      at: event.at,
+      unreadCount,
+    });
+  };
+
+  req.on('close', () => {
+    closed = true;
+  });
+
+  try {
+    // Baseline: sync current revision + unread (no historical alert spam).
+    const baseline = await listAppOrderNotifyEventsSince(lastRevision);
+    const readIds = await listReadAppOrderIds();
+    const unreadCount = await countPendingUnreadAppOrders(readIds);
+    lastRevision = Math.max(lastRevision, baseline.revision);
+    await send('ready', {
+      revision: lastRevision,
+      active: baseline.active,
+      unreadCount,
+    });
+
+    const unsubscribe = await subscribeAppOrderNotify(event => {
+      void pushEvent(event);
+    });
+
+    if (unsubscribe) {
+      // True push via Redis Pub/Sub — keep alive until client disconnects.
+      const heartbeat = setInterval(() => {
+        if (closed) return;
+        res.write(`: ping\n\n`);
+      }, 15_000);
+      req.on('close', () => {
+        clearInterval(heartbeat);
+        void unsubscribe();
+      });
+      // Hold the request open (Vercel maxDuration applies).
+      await new Promise<void>(resolve => {
+        req.on('close', () => resolve());
+      });
+      return;
+    }
+
+    // No TCP subscribe (Upstash REST only): bridge with short Redis waits,
+    // but the browser still only holds one EventSource (push-style).
+    while (!closed) {
+      const feed = await waitForAppOrderNotifyEvents(lastRevision, 8_000);
+      if (closed) break;
+      for (const event of feed.events) {
+        await pushEvent(event);
+      }
+      if (feed.events.length === 0) {
+        const ids = await listReadAppOrderIds();
+        const count = await countPendingUnreadAppOrders(ids);
+        await send('heartbeat', {
+          revision: feed.revision,
+          unreadCount: count,
+        });
+      }
+    }
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Notify stream failed.';
+    console.error('[online-orders] notify-stream', message);
+    if (!closed) {
+      await send('error', { message });
+      res.end();
+    }
   }
 });
 

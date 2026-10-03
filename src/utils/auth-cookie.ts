@@ -44,13 +44,19 @@ export function clearWebAuthCookie(res: Response): void {
   });
 }
 
-/** Bearer token, else web httpOnly cookie. */
+/** Bearer token, else query token (EventSource), else web httpOnly cookie. */
 export function extractAccessToken(req: Request): string | null {
   const header = req.headers.authorization;
   if (header?.startsWith('Bearer ')) {
     const bearer = header.slice(7).trim();
     if (bearer) return bearer;
   }
+  // EventSource cannot set Authorization headers — allow ?access_token=.
+  const query = req.query as Record<string, unknown> | undefined;
+  const fromQuery = String(
+    query?.access_token ?? query?.token ?? '',
+  ).trim();
+  if (fromQuery) return fromQuery;
   const cookie = readCookie(req, WEB_AUTH_COOKIE);
   return cookie?.trim() || null;
 }
