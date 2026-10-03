@@ -392,6 +392,47 @@ export async function clearPendingAppOrderIds(orderIds: number[]): Promise<void>
   await writeFileStore(store);
 }
 
+/** Bump revision so website polls refresh unreadCount (e.g. after delete). */
+export async function bumpAppOrderNotifyRevision(): Promise<number> {
+  try {
+    const backend = await getRedisBackend();
+    if (backend) {
+      if (backend.kind === 'upstash') {
+        return Number(await backend.client.incr(REV_KEY)) || 0;
+      }
+      return Number(await backend.client.incr(REV_KEY)) || 0;
+    }
+  } catch (error) {
+    console.error(
+      '[app-order-notify] revision bump failed:',
+      error instanceof Error ? error.message : error,
+    );
+    redisBackend = null;
+    redisBackendCheckedAt = Date.now();
+  }
+
+  const store = await readFileStore();
+  store.revision += 1;
+  await writeFileStore(store);
+  return store.revision;
+}
+
+/**
+ * Drop pending ids that no longer exist in Odoo (deleted sale orders).
+ * `existingIds` = sale.order ids that still exist.
+ */
+export async function prunePendingAppOrderIdsNotExisting(
+  existingIds: Set<number>,
+): Promise<number[]> {
+  const pending = await listPendingAppOrderIds();
+  if (!pending.size) return [];
+  const missing = [...pending].filter(id => !existingIds.has(id));
+  if (!missing.length) return [];
+  await clearPendingAppOrderIds(missing);
+  await bumpAppOrderNotifyRevision();
+  return missing;
+}
+
 export async function listPendingAppOrderIds(): Promise<Set<number>> {
   try {
     const backend = await getRedisBackend();

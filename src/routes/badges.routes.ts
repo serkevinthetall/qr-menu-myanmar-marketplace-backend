@@ -10,6 +10,8 @@ import { AppInstallModel } from '../models/app-install.model.js';
 import {
   countPendingUnreadAppOrders,
   isAppOrderNotifyActive,
+  listPendingAppOrderIds,
+  prunePendingAppOrderIdsNotExisting,
   seedPendingAppOrderIds,
 } from '../services/app-order-notify.store.js';
 import {
@@ -18,12 +20,30 @@ import {
 import {
   countOdooMembershipApplications,
   fetchOdooOnlineOrders,
+  filterExistingSaleOrderIds,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
 
 const router = Router();
 
 router.use(authMiddleware);
+
+/** At most one Odoo existence check per process every 45s (badge poll is 60s). */
+let lastPendingPruneAt = 0;
+const PENDING_PRUNE_MS = 45_000;
+
+async function pruneDeletedPendingForBadges(userId: string): Promise<void> {
+  const now = Date.now();
+  if (now - lastPendingPruneAt < PENDING_PRUNE_MS) return;
+  const pending = await listPendingAppOrderIds();
+  if (!pending.size) {
+    lastPendingPruneAt = now;
+    return;
+  }
+  const existing = await filterExistingSaleOrderIds(userId, [...pending]);
+  await prunePendingAppOrderIdsNotExisting(existing);
+  lastPendingPruneAt = now;
+}
 
 /**
  * GET /api/badges — one light payload for sidebar / header badges.
@@ -49,6 +69,7 @@ router.get('/', async (req: AuthRequest, res) => {
     try {
       const readIds = await listReadAppOrderIds();
       if (await isAppOrderNotifyActive()) {
+        await pruneDeletedPendingForBadges(userId).catch(() => undefined);
         return countPendingUnreadAppOrders(readIds);
       }
 

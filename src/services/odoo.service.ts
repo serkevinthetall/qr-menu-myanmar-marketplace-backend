@@ -8056,6 +8056,44 @@ function buildAppOrderDomain(administratorUserId: number | null): unknown[] {
   return [['state', '=', 'sent']];
 }
 
+/**
+ * Which of the given sale.order ids still exist in Odoo.
+ * Used to drop deleted App Orders from the Redis unread badge set.
+ */
+export async function filterExistingSaleOrderIds(
+  userId: string,
+  orderIds: number[],
+): Promise<Set<number>> {
+  const ids = [
+    ...new Set(
+      orderIds
+        .map(id => Number(id))
+        .filter(id => Number.isFinite(id) && id > 0)
+        .map(id => Math.trunc(id)),
+    ),
+  ];
+  if (!ids.length) return new Set();
+
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const rows = await searchReadOdooRecords<{ id: number }>(
+    session,
+    'sale.order',
+    [['id', 'in', ids]],
+    ['id'],
+    { limit: ids.length },
+  );
+  return new Set(
+    rows
+      .map(row => Number(row.id))
+      .filter(id => Number.isFinite(id) && id > 0)
+      .map(id => Math.trunc(id)),
+  );
+}
+
 export async function fetchOdooOnlineOrders(
   userId: string,
   options?: { limit?: number; offset?: number; q?: string; from?: string; to?: string },

@@ -1,7 +1,11 @@
 import { Router } from 'express';
 
 import { env } from '../config/env.js';
-import { recordAppOrderNotifyEvent } from '../services/app-order-notify.store.js';
+import {
+  bumpAppOrderNotifyRevision,
+  clearPendingAppOrderIds,
+  recordAppOrderNotifyEvent,
+} from '../services/app-order-notify.store.js';
 import { listReadAppOrderIds } from '../services/app-order-read.store.js';
 
 const router = Router();
@@ -65,15 +69,124 @@ function idFromOrderName(name: string): number {
   return hash || 0;
 }
 
+function extractSaleOrderId(
+  record: Record<string, unknown>,
+  body: Record<string, unknown>,
+): { id: number; number: string } {
+  const number = firstString(
+    record.name,
+    body.name,
+    record.display_name,
+    body.display_name,
+  );
+  let id = 0;
+  for (const candidate of [
+    record.id,
+    body.id,
+    record.res_id,
+    body.res_id,
+    record._id,
+    body._id,
+  ]) {
+    const n = firstNumber(candidate);
+    if (n > id) id = n;
+  }
+  if ((!id || id === 1) && number) {
+    const fromName = idFromOrderName(number);
+    if (fromName) id = fromName;
+  }
+  return { id, number };
+}
+
+function isDeleteWebhook(
+  body: Record<string, unknown>,
+  record: Record<string, unknown>,
+  query: Record<string, unknown>,
+): boolean {
+  const hints = [
+    query.event,
+    query.action,
+    body._action,
+    body.action,
+    body.event,
+    body.operation,
+    body.method,
+    record._action,
+    record.action,
+    record.event,
+  ];
+  return hints.some(value => {
+    const s = String(value ?? '')
+      .trim()
+      .toLowerCase();
+    return (
+      s === 'delete' ||
+      s === 'unlink' ||
+      s === 'remove' ||
+      s.includes('delete') ||
+      s.includes('unlink')
+    );
+  });
+}
+
+async function handleRemoveAppOrder(
+  req: {
+    body: unknown;
+    query: Record<string, unknown>;
+  },
+  res: {
+    status: (code: number) => { json: (body: unknown) => unknown };
+    json: (body: unknown) => unknown;
+  },
+) {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const record =
+    body.record && typeof body.record === 'object'
+      ? (body.record as Record<string, unknown>)
+      : body;
+  const { id } = extractSaleOrderId(record, body);
+  if (!id) {
+    return res.status(400).json({ message: 'Missing sale.order id.' });
+  }
+  await clearPendingAppOrderIds([id]);
+  const revision = await bumpAppOrderNotifyRevision();
+  return res.json({
+    data: { accepted: true, id, removed: true, revision },
+  });
+}
+
+/**
+ * Odoo Automation On Deletion → drop unread badge.
+ * POST /api/odoo/webhook/app-order/delete?secret=...
+ * (same secret as create webhook)
+ */
+router.post('/webhook/app-order/delete', async (req, res) => {
+  if (!env.odooWebhookSecret) {
+    return res.status(503).json({
+      message: 'ODOO_WEBHOOK_SECRET is not configured on the backend.',
+    });
+  }
+  if (!webhookSecretOk(req)) {
+    return res.status(401).json({ message: 'Invalid webhook secret.' });
+  }
+  try {
+    return await handleRemoveAppOrder(req, res);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Webhook handling failed.';
+    console.error('[odoo-webhook] app-order/delete', message);
+    return res.status(500).json({ message });
+  }
+});
+
 /**
  * Odoo Automation / Server Action → website notify bus.
  *
  * POST /api/odoo/webhook/app-order
  * Header: X-Odoo-Webhook-Secret: <ODOO_WEBHOOK_SECRET>
  *
- * Accepts flexible payloads, e.g.:
- *   { "id": 123, "name": "S05202", "partner_id": [1,"Acme"], "amount_total": 1000, "state": "sent" }
- *   { "_id": 123, ... }  (some Odoo webhook shapes)
+ * Create/update → unread badge + alert.
+ * Delete: use /webhook/app-order/delete or ?event=delete
  */
 router.post('/webhook/app-order', async (req, res) => {
   if (!env.odooWebhookSecret) {
@@ -92,33 +205,11 @@ router.post('/webhook/app-order', async (req, res) => {
         ? (body.record as Record<string, unknown>)
         : body;
 
-    // Odoo "Send Webhook Notification" sends `_id` = record id, plus selected fields.
-    // Prefer explicit `id` / `res_id` when present; never treat action metadata as id.
-    const number = firstString(
-      record.name,
-      body.name,
-      record.display_name,
-      body.display_name,
-    );
-    // Prefer the largest explicit id (avoids stub `_id: 1` winning over a real `id`).
-    let id = 0;
-    for (const candidate of [
-      record.id,
-      body.id,
-      record.res_id,
-      body.res_id,
-      record._id,
-      body._id,
-    ]) {
-      const n = firstNumber(candidate);
-      if (n > id) id = n;
+    if (isDeleteWebhook(body, record, req.query as Record<string, unknown>)) {
+      return await handleRemoveAppOrder(req, res);
     }
-    // Some Odoo payloads omit usable ids (or only send sample `_id: 1`);
-    // fall back to Order Reference so each new SO still grows unread.
-    if ((!id || id === 1) && number) {
-      const fromName = idFromOrderName(number);
-      if (fromName) id = fromName;
-    }
+
+    const { id, number } = extractSaleOrderId(record, body);
     if (!id) {
       console.warn(
         '[odoo-webhook] missing sale.order id; keys=',

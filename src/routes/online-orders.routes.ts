@@ -6,6 +6,8 @@ import {
   countPendingUnreadAppOrders,
   isAppOrderNotifyActive,
   listAppOrderNotifyEventsSince,
+  listPendingAppOrderIds,
+  prunePendingAppOrderIdsNotExisting,
   seedPendingAppOrderIds,
   subscribeAppOrderNotify,
   waitForAppOrderNotifyEvents,
@@ -22,6 +24,7 @@ import {
   fetchOdooInvoicePreviewsForOrder,
   fetchOdooOnlineOrderDetailBundle,
   fetchOdooOnlineOrders,
+  filterExistingSaleOrderIds,
   fetchSaleOrderIdsWithValidatableDelivery,
   payOdooSaleOrderInvoice,
   validateOdooSaleOrderDelivery,
@@ -59,6 +62,14 @@ function mapNotifyFeedResponse(
     })),
     unreadCount,
   };
+}
+
+/** Drop Redis pending ids for sale.orders deleted in Odoo. */
+async function pruneDeletedPendingAppOrders(userId: string): Promise<void> {
+  const pending = await listPendingAppOrderIds();
+  if (!pending.size) return;
+  const existing = await filterExistingSaleOrderIds(userId, [...pending]);
+  await prunePendingAppOrderIdsNotExisting(existing);
 }
 
 /**
@@ -281,6 +292,8 @@ router.get('/', async (req: AuthRequest, res) => {
       .map(row => row.id);
     // Hydrate webhook pending set so badges stay cheap after list loads.
     void seedPendingAppOrderIds(unreadIds).catch(() => undefined);
+    // Deleted sale orders must leave the unread badge.
+    void pruneDeletedPendingAppOrders(req.user!.id).catch(() => undefined);
     // Opt-in: stock.picking enrichment is slow (~seconds). Only when list
     // selection / bulk validate is enabled (includeValidate=1).
     const includeValidateRaw = String(req.query.includeValidate ?? '')
@@ -423,6 +436,8 @@ router.get('/:id', async (req: AuthRequest, res) => {
       saleOrderId,
     );
     if (!bundle) {
+      // Deleted (or no longer an App Order) — drop from unread badge.
+      await clearPendingAppOrderIds([saleOrderId]);
       return res.status(404).json({ message: 'App order not found.' });
     }
 
