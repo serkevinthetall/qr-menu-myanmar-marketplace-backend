@@ -7,6 +7,7 @@ import {
   isAppOrderNotifyActive,
   listAppOrderNotifyEventsSince,
   seedPendingAppOrderIds,
+  waitForAppOrderNotifyEvents,
 } from '../services/app-order-notify.store.js';
 import {
   listReadAppOrderIds,
@@ -40,6 +41,25 @@ mountSaleOrderChatterRoutes(router, {
   idLabel: 'app order',
 });
 
+function mapNotifyFeedResponse(
+  feed: Awaited<ReturnType<typeof listAppOrderNotifyEventsSince>>,
+  unreadCount: number,
+) {
+  return {
+    revision: feed.revision,
+    active: feed.active,
+    events: feed.events.map(event => ({
+      revision: event.revision,
+      id: String(event.id),
+      number: event.number,
+      customer: event.customer,
+      total: event.total,
+      at: event.at,
+    })),
+    unreadCount,
+  };
+}
+
 /**
  * Cheap Redis/file feed for website alerts — no Odoo call.
  * GET /api/online-orders/notify-feed?since=<revision>
@@ -53,24 +73,42 @@ router.get('/notify-feed', async (req: AuthRequest, res) => {
     const readIds = await listReadAppOrderIds();
     const unreadCount = await countPendingUnreadAppOrders(readIds);
     return res.json({
-      data: {
-        revision: feed.revision,
-        active: feed.active,
-        events: feed.events.map(event => ({
-          revision: event.revision,
-          id: String(event.id),
-          number: event.number,
-          customer: event.customer,
-          total: event.total,
-          at: event.at,
-        })),
-        unreadCount,
-      },
+      data: mapNotifyFeedResponse(feed, unreadCount),
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load notify feed.';
     console.error('[online-orders] notify-feed', message);
+    return res.status(500).json({ message });
+  }
+});
+
+/**
+ * Long-poll: hold until Redis revision advances (Odoo webhook) or timeout.
+ * Website keeps one open request — not a busy Odoo loop.
+ * GET /api/online-orders/notify-wait?since=<revision>&timeout=8000
+ */
+router.get('/notify-wait', async (req: AuthRequest, res) => {
+  try {
+    const since = Number(req.query.since);
+    const timeoutRaw = Number(req.query.timeout);
+    const timeoutMs =
+      Number.isFinite(timeoutRaw) && timeoutRaw > 0
+        ? Math.min(timeoutRaw, 20_000)
+        : 8_000;
+    const feed = await waitForAppOrderNotifyEvents(
+      Number.isFinite(since) ? since : 0,
+      timeoutMs,
+    );
+    const readIds = await listReadAppOrderIds();
+    const unreadCount = await countPendingUnreadAppOrders(readIds);
+    return res.json({
+      data: mapNotifyFeedResponse(feed, unreadCount),
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to wait for notify.';
+    console.error('[online-orders] notify-wait', message);
     return res.status(500).json({ message });
   }
 });

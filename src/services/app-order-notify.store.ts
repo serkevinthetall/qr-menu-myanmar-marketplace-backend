@@ -441,3 +441,34 @@ export async function countPendingUnreadAppOrders(
   }
   return count;
 }
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Long-poll helper: wait until revision advances (webhook wrote Redis),
+ * or until timeout. Avoids busy client loops and Odoo search_read.
+ */
+export async function waitForAppOrderNotifyEvents(
+  sinceRevision: number,
+  timeoutMs = 8_000,
+): Promise<{
+  revision: number;
+  events: AppOrderNotifyEvent[];
+  active: boolean;
+}> {
+  const since = Number.isFinite(sinceRevision) ? Math.max(0, sinceRevision) : 0;
+  const wait = Math.min(Math.max(timeoutMs, 1_000), 25_000);
+  const deadline = Date.now() + wait;
+
+  while (Date.now() < deadline) {
+    const feed = await listAppOrderNotifyEventsSince(since);
+    if (feed.revision > since) {
+      return feed;
+    }
+    await sleep(700);
+  }
+
+  return listAppOrderNotifyEventsSince(since);
+}
