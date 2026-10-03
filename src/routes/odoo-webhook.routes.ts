@@ -49,6 +49,22 @@ function firstString(...values: unknown[]): string {
   return '';
 }
 
+/** Stable positive id when Odoo omits `_id` but sends Order Reference. */
+function idFromOrderName(name: string): number {
+  const trimmed = name.trim();
+  if (!trimmed) return 0;
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits) {
+    const n = Number(digits.slice(-9));
+    if (Number.isFinite(n) && n > 0) return Math.trunc(n);
+  }
+  let hash = 0;
+  for (let i = 0; i < trimmed.length; i += 1) {
+    hash = (hash * 31 + trimmed.charCodeAt(i)) >>> 0;
+  }
+  return hash || 0;
+}
+
 /**
  * Odoo Automation / Server Action → website notify bus.
  *
@@ -76,14 +92,38 @@ router.post('/webhook/app-order', async (req, res) => {
         ? (body.record as Record<string, unknown>)
         : body;
 
-    const id = firstNumber(
-      record.id,
-      record._id,
-      body.id,
-      body._id,
-      body.res_id,
+    // Odoo "Send Webhook Notification" sends `_id` = record id, plus selected fields.
+    // Prefer explicit `id` / `res_id` when present; never treat action metadata as id.
+    const number = firstString(
+      record.name,
+      body.name,
+      record.display_name,
+      body.display_name,
     );
+    // Prefer the largest explicit id (avoids stub `_id: 1` winning over a real `id`).
+    let id = 0;
+    for (const candidate of [
+      record.id,
+      body.id,
+      record.res_id,
+      body.res_id,
+      record._id,
+      body._id,
+    ]) {
+      const n = firstNumber(candidate);
+      if (n > id) id = n;
+    }
+    // Some Odoo payloads omit usable ids (or only send sample `_id: 1`);
+    // fall back to Order Reference so each new SO still grows unread.
+    if ((!id || id === 1) && number) {
+      const fromName = idFromOrderName(number);
+      if (fromName) id = fromName;
+    }
     if (!id) {
+      console.warn(
+        '[odoo-webhook] missing sale.order id; keys=',
+        Object.keys(body).join(','),
+      );
       return res.status(400).json({ message: 'Missing sale.order id.' });
     }
 
@@ -96,7 +136,7 @@ router.post('/webhook/app-order', async (req, res) => {
 
     const event = await recordAppOrderNotifyEvent({
       id,
-      number: firstString(record.name, body.name, record.display_name),
+      number,
       customer: firstString(
         record.partner_id,
         body.partner_id,
