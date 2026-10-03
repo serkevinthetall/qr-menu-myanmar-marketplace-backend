@@ -2,6 +2,13 @@ import { Router } from 'express';
 
 import { authMiddleware } from '../middleware/auth.js';
 import {
+  clearPendingAppOrderIds,
+  countPendingUnreadAppOrders,
+  isAppOrderNotifyActive,
+  listAppOrderNotifyEventsSince,
+  seedPendingAppOrderIds,
+} from '../services/app-order-notify.store.js';
+import {
   listReadAppOrderIds,
   setAppOrderRead,
   setAppOrderReadMany,
@@ -33,18 +40,60 @@ mountSaleOrderChatterRoutes(router, {
   idLabel: 'app order',
 });
 
+/**
+ * Cheap Redis/file feed for website alerts — no Odoo call.
+ * GET /api/online-orders/notify-feed?since=<revision>
+ */
+router.get('/notify-feed', async (req: AuthRequest, res) => {
+  try {
+    const since = Number(req.query.since);
+    const feed = await listAppOrderNotifyEventsSince(
+      Number.isFinite(since) ? since : 0,
+    );
+    const readIds = await listReadAppOrderIds();
+    const unreadCount = await countPendingUnreadAppOrders(readIds);
+    return res.json({
+      data: {
+        revision: feed.revision,
+        active: feed.active,
+        events: feed.events.map(event => ({
+          revision: event.revision,
+          id: String(event.id),
+          number: event.number,
+          customer: event.customer,
+          total: event.total,
+          at: event.at,
+        })),
+        unreadCount,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load notify feed.';
+    console.error('[online-orders] notify-feed', message);
+    return res.status(500).json({ message });
+  }
+});
+
 router.get('/unread-count', async (req: AuthRequest, res) => {
   try {
+    const readIds = await listReadAppOrderIds();
+    if (await isAppOrderNotifyActive()) {
+      const unreadCount = await countPendingUnreadAppOrders(readIds);
+      return res.json({ data: { unreadCount, source: 'notify' } });
+    }
+
     const rows = await fetchOdooOnlineOrders(req.user!.id, {
       limit: 500,
       offset: 0,
     });
-    const readIds = await listReadAppOrderIds();
-    const unreadCount = rows.reduce(
-      (count, row) => count + (readIds.has(row.id) ? 0 : 1),
-      0,
-    );
-    return res.json({ data: { unreadCount } });
+    const unreadIds = rows
+      .filter(row => !readIds.has(row.id))
+      .map(row => row.id);
+    await seedPendingAppOrderIds(unreadIds);
+    return res.json({
+      data: { unreadCount: unreadIds.length, source: 'odoo' },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to load unread count.';
@@ -77,6 +126,11 @@ router.get('/', async (req: AuthRequest, res) => {
       to: to || undefined,
     });
     const readIds = await listReadAppOrderIds();
+    const unreadIds = rows
+      .filter(row => !readIds.has(row.id))
+      .map(row => row.id);
+    // Hydrate webhook pending set so badges stay cheap after list loads.
+    void seedPendingAppOrderIds(unreadIds).catch(() => undefined);
     // Opt-in: stock.picking enrichment is slow (~seconds). Only when list
     // selection / bulk validate is enabled (includeValidate=1).
     const includeValidateRaw = String(req.query.includeValidate ?? '')
@@ -150,11 +204,13 @@ router.put('/read-all', async (req: AuthRequest, res) => {
     }
 
     await setAppOrderReadMany(targetIds, read);
+    if (read) {
+      await clearPendingAppOrderIds(targetIds);
+    } else {
+      await seedPendingAppOrderIds(targetIds);
+    }
     const readIds = await listReadAppOrderIds();
-    const unreadCount = (targetIds as number[]).reduce(
-      (count: number, id: number) => count + (readIds.has(id) ? 0 : 1),
-      0,
-    );
+    const unreadCount = await countPendingUnreadAppOrders(readIds);
 
     return res.json({
       data: {
@@ -189,6 +245,11 @@ router.put('/:id/read', async (req: AuthRequest, res) => {
     }
 
     await setAppOrderRead(saleOrderId, read);
+    if (read) {
+      await clearPendingAppOrderIds([saleOrderId]);
+    } else {
+      await seedPendingAppOrderIds([saleOrderId]);
+    }
     return res.json({
       data: { id: String(saleOrderId), unread: !read },
     });
@@ -217,6 +278,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
 
     // Opening detail marks the order read for the whole team.
     await setAppOrderRead(saleOrderId, true);
+    await clearPendingAppOrderIds([saleOrderId]);
     const detail = mapSaleOrderDetail(bundle);
     const flags = await enrichSaleOrderActionFlags(
       req.user!.id,

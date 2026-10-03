@@ -213,6 +213,11 @@ export const env = {
   telegramWebhookUrl: (process.env.TELEGRAM_WEBHOOK_URL ?? '').trim(),
   /** Vercel Cron Authorization: Bearer <CRON_SECRET> */
   cronSecret: (process.env.CRON_SECRET ?? '').trim(),
+  /**
+   * Shared secret for Odoo → ERP App Order webhooks.
+   * Header: X-Odoo-Webhook-Secret (or Authorization: Bearer …).
+   */
+  odooWebhookSecret: (process.env.ODOO_WEBHOOK_SECRET ?? '').trim(),
   /** True when running on Vercel (serverless). */
   isVercel: Boolean(process.env.VERCEL),
   telegramDailyReportEnabled: (() => {

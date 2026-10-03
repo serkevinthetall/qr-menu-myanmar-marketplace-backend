@@ -8,6 +8,11 @@ import {
 } from '../config/mongo.js';
 import { AppInstallModel } from '../models/app-install.model.js';
 import {
+  countPendingUnreadAppOrders,
+  isAppOrderNotifyActive,
+  seedPendingAppOrderIds,
+} from '../services/app-order-notify.store.js';
+import {
   listReadAppOrderIds,
 } from '../services/app-order-read.store.js';
 import {
@@ -23,6 +28,9 @@ router.use(authMiddleware);
 /**
  * GET /api/badges — one light payload for sidebar / header badges.
  * Prefer this over polling three separate badge endpoints.
+ *
+ * App Order unread prefers the Odoo webhook notify bus (Redis) so the
+ * website does not search_read 500 sale.orders on every poll.
  */
 router.get('/', async (req: AuthRequest, res) => {
   const userId = req.user!.id;
@@ -39,15 +47,21 @@ router.get('/', async (req: AuthRequest, res) => {
 
   const appOrderUnreadPromise = (async () => {
     try {
+      const readIds = await listReadAppOrderIds();
+      if (await isAppOrderNotifyActive()) {
+        return countPendingUnreadAppOrders(readIds);
+      }
+
+      // Cold start / webhook not configured yet — one Odoo pass, then seed Redis.
       const rows = await fetchOdooOnlineOrders(userId, {
         limit: 500,
         offset: 0,
       });
-      const readIds = await listReadAppOrderIds();
-      return rows.reduce(
-        (count, row) => count + (readIds.has(row.id) ? 0 : 1),
-        0,
-      );
+      const unreadIds = rows
+        .filter(row => !readIds.has(row.id))
+        .map(row => row.id);
+      await seedPendingAppOrderIds(unreadIds);
+      return unreadIds.length;
     } catch (error) {
       console.error(
         '[badges] app-order-unread',

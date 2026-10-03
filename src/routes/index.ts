@@ -19,6 +19,7 @@ import { Router } from 'express';
  *   /api/online-orders/*
  *   /api/insights/*
  *   /api/telegram/*   (webhook, Vercel cron, daily report)
+ *   /api/odoo/*       (Odoo → ERP webhooks, no JWT)
  *
  * PHONE APP (sales-rep handheld):
  *   /api/app/health
@@ -50,6 +51,7 @@ import purchaseOrdersRoutes from './purchase-orders.routes.js';
 import quotationsRoutes from './quotations.routes.js';
 import saleOrdersRoutes from './sale-orders.routes.js';
 import telegramRoutes from './telegram.routes.js';
+import odooWebhookRoutes from './odoo-webhook.routes.js';
 import { env } from '../config/env.js';
 
 const router = Router();
@@ -78,6 +80,7 @@ router.use('/sale-orders', saleOrdersRoutes);
 router.use('/online-orders', onlineOrdersRoutes);
 router.use('/insights', insightsRoutes);
 router.use('/telegram', telegramRoutes);
+router.use('/odoo', odooWebhookRoutes);
 // @temp-feature app-install-call-list
 if (env.enableAppInstallCallList) {
   router.use('/app-installs', appInstallsRoutes);
