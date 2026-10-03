@@ -8595,14 +8595,52 @@ function sumOrders(orders: OdooSaleOrder[]): number {
   return orders.reduce((sum, order) => sum + (Number(order.amount_total) || 0), 0);
 }
 
+async function odooSearchCount(
+  session: { cookie: string; uid: number },
+  model: string,
+  domain: unknown[],
+): Promise<number> {
+  if (env.odooApiKey) {
+    try {
+      const count = await odooExecuteKw<number>(
+        session.uid,
+        model,
+        'search_count',
+        [domain],
+      );
+      if (typeof count === 'number' && Number.isFinite(count)) {
+        return count;
+      }
+    } catch {
+      // fall back to login session cookie
+    }
+  }
+  return odooCallKw<number>(session.cookie, model, 'search_count', [domain]);
+}
+
+/**
+ * Overview / AI insights snapshot from Odoo.
+ * When `elevated` is true and ODOO_SERVICE_UID + ODOO_API_KEY are set, reads
+ * use the service account so the AI chat can see company-wide sales even if
+ * the logged-in user has narrower Odoo record rules.
+ */
 export async function fetchOverviewInsights(
   userId: string,
   period: OverviewPeriod,
+  options?: { elevated?: boolean },
 ) {
   const session = getOdooSession(userId);
   if (!session) {
     throw new Error('Odoo session expired. Please log in again.');
   }
+
+  const useService =
+    Boolean(options?.elevated) &&
+    Boolean(env.odooApiKey) &&
+    env.odooServiceUid > 0;
+  const readSession = useService
+    ? { cookie: session.cookie, uid: env.odooServiceUid }
+    : session;
 
   const window = buildPeriodWindow(period);
   const fromStr = toOdooDatetime(window.from);
@@ -8627,58 +8665,52 @@ export async function fetchOverviewInsights(
     prevMembershipCount,
   ] = await Promise.all([
     searchReadOdooRecords<OdooSaleOrder>(
-      session,
+      readSession,
       'sale.order',
       saleDomain,
       SALE_ORDER_LIST_FIELDS,
       { order: 'date_order desc, id desc', limit: 1000 },
     ),
     searchReadOdooRecords<OdooSaleOrder>(
-      session,
+      readSession,
       'sale.order',
       prevSaleDomain,
       ['id', 'amount_total', 'partner_id'],
       { limit: 1000 },
     ),
     searchReadOdooRecords<OdooPurchaseOrder>(
-      session,
+      readSession,
       'purchase.order',
       purchaseDomain,
       PURCHASE_ORDER_LIST_FIELDS,
       { order: 'date_order desc, id desc', limit: 1000 },
     ),
     searchReadOdooRecords<OdooPurchaseOrder>(
-      session,
+      readSession,
       'purchase.order',
       prevPurchaseDomain,
       ['id', 'amount_total'],
       { limit: 1000 },
     ),
-    odooCallKw<number>(session.cookie, 'sale.order', 'search_count', [
-      [
-        ['date_order', '>=', fromStr],
-        ['date_order', '<', toStr],
-        ['state', 'in', ['draft', 'sent', 'sale', 'done']],
-      ],
+    odooSearchCount(readSession, 'sale.order', [
+      ['date_order', '>=', fromStr],
+      ['date_order', '<', toStr],
+      ['state', 'in', ['draft', 'sent', 'sale', 'done']],
     ]),
-    odooCallKw<number>(session.cookie, 'sale.order', 'search_count', [
-      [
-        ['date_order', '>=', prevFromStr],
-        ['date_order', '<', prevToStr],
-        ['state', 'in', ['draft', 'sent', 'sale', 'done']],
-      ],
+    odooSearchCount(readSession, 'sale.order', [
+      ['date_order', '>=', prevFromStr],
+      ['date_order', '<', prevToStr],
+      ['state', 'in', ['draft', 'sent', 'sale', 'done']],
     ]),
-    odooCallKw<number>(session.cookie, 'x_membership', 'search_count', [
-      [
-        ['x_studio_start_date', '>=', fromStr.slice(0, 10)],
-        ['x_studio_start_date', '<', toStr.slice(0, 10)],
-      ],
+    odooSearchCount(readSession, 'x_membership', [
+      ['x_studio_start_date', '>=', fromStr.slice(0, 10)],
+      ['x_studio_start_date', '<', toStr.slice(0, 10)],
     ]).catch(async () => {
       const rows = await searchReadOdooRecords<{
         id: number;
         x_studio_start_date: string | false;
       }>(
-        session,
+        readSession,
         'x_membership',
         [],
         ['id', 'x_studio_start_date'],
@@ -8691,11 +8723,9 @@ export async function fetchOverviewInsights(
         return start >= fromDay && start < toDay;
       }).length;
     }),
-    odooCallKw<number>(session.cookie, 'x_membership', 'search_count', [
-      [
-        ['x_studio_start_date', '>=', prevFromStr.slice(0, 10)],
-        ['x_studio_start_date', '<', prevToStr.slice(0, 10)],
-      ],
+    odooSearchCount(readSession, 'x_membership', [
+      ['x_studio_start_date', '>=', prevFromStr.slice(0, 10)],
+      ['x_studio_start_date', '<', prevToStr.slice(0, 10)],
     ]).catch(() => 0),
   ]);
 
@@ -8739,7 +8769,7 @@ export async function fetchOverviewInsights(
   let partners: OverviewPartnerRow[] = [];
   if (partnerIds.length > 0) {
     partners = await searchReadOdooRecords<OverviewPartnerRow>(
-      session,
+      readSession,
       'res.partner',
       [['id', 'in', partnerIds]],
       ['id', 'city', PARTNER_TOWNSHIP_FIELD],
@@ -8810,7 +8840,7 @@ export async function fetchOverviewInsights(
       let lines: OverviewLineRow[] = [];
       try {
         lines = await searchReadOdooRecords<OverviewLineRow>(
-          session,
+          readSession,
           'sale.order.line',
           [
             ['order_id', 'in', chunk],
@@ -8827,7 +8857,7 @@ export async function fetchOverviewInsights(
         );
       } catch {
         lines = await searchReadOdooRecords<OverviewLineRow>(
-          session,
+          readSession,
           'sale.order.line',
           [['order_id', 'in', chunk]],
           ['id', 'product_id', 'price_subtotal', 'product_uom_qty'],
@@ -8906,7 +8936,7 @@ export async function fetchOverviewInsights(
     let stockRows: StockProductRow[] = [];
     try {
       stockRows = await searchReadOdooRecords<StockProductRow>(
-        session,
+        readSession,
         'product.product',
         [
           ['active', '=', true],
@@ -8918,7 +8948,7 @@ export async function fetchOverviewInsights(
       );
     } catch {
       stockRows = await searchReadOdooRecords<StockProductRow>(
-        session,
+        readSession,
         'product.product',
         [['active', '=', true], ['sale_ok', '=', true]],
         ['id', 'name', 'qty_available'],
@@ -8945,7 +8975,7 @@ export async function fetchOverviewInsights(
     );
     if (missingDemandIds.length > 0) {
       const extra = await searchReadOdooRecords<StockProductRow>(
-        session,
+        readSession,
         'product.product',
         [['id', 'in', missingDemandIds]],
         ['id', 'name', 'qty_available'],

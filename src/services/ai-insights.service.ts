@@ -44,7 +44,7 @@ export function isAiInsightsEnabled(): boolean {
 
 export async function runDailyInsightRollup(userId: string): Promise<DailyInsightRollup> {
   assertAiEnabled();
-  const summary = await fetchOverviewInsights(userId, 'day');
+  const summary = await fetchOverviewInsights(userId, 'day', { elevated: true });
   const date = yangonDateString();
 
   const rollup: DailyInsightRollup = {
@@ -435,7 +435,7 @@ export async function generateAiSuggestions(
   // Only fetch live monthly Overview + order lists when the user clicks Process.
   const [history, monthLive, saleOrders, purchaseOrders] = await Promise.all([
     listDailyRollups(90),
-    fetchOverviewInsights(userId, 'month'),
+    fetchOverviewInsights(userId, 'month', { elevated: true }),
     fetchOverviewOrders(userId, 'month', 'sale', { compare: false }),
     fetchOverviewOrders(userId, 'month', 'purchase', { compare: false }),
   ]);
@@ -777,7 +777,10 @@ export async function answerOverviewChat(
     throw new Error('Message is required.');
   }
 
-  const overview = await fetchOverviewInsights(userId, period);
+  // Company-wide sales via ODOO_SERVICE_UID when configured.
+  const overview = await fetchOverviewInsights(userId, period, {
+    elevated: true,
+  });
   const snapshot = compactMonthLive(overview);
   const system = `${CHAT_SYSTEM}
 
