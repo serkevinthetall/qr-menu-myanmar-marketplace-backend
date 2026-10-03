@@ -33,7 +33,8 @@ function parsePeriod(raw: unknown): OverviewPeriod {
     value === 'day' ||
     value === 'week' ||
     value === 'month' ||
-    value === 'last_month'
+    value === 'last_month' ||
+    value === 'last_3_months'
   ) {
     return value;
   }

@@ -732,7 +732,8 @@ export type OverviewChatTurn = {
 const CHAT_SYSTEM = `You are a helpful shop assistant for a Myanmar QR Menu ERP (Overview).
 Answer from OVERVIEW DATA only. If the data does not contain the answer, say you do not have that figure.
 Always use the periodLabel and range in OVERVIEW DATA — that is the period that was loaded for this question.
-If the user asked for last month and periodLabel is Last month, analyze that range (not "this month").
+Supported periods: This month, Last month, Last 3 months (plus today / this week).
+Always analyze the periodLabel/range loaded in OVERVIEW DATA for the question.
 Sale figures are confirmed sale/done orders with amount > 0. Quotations are separate and can be non-zero when sales are 0.
 Reply in the same language as the user. If the user writes Burmese, reply in Burmese (Myanmar script). If English, reply in English.
 Keep customer, vendor, area, and product names exactly as in the data. Amounts are MMK.
@@ -747,6 +748,8 @@ function periodLabelForChat(period: OverviewPeriod): string {
       return 'This week';
     case 'last_month':
       return 'Last month';
+    case 'last_3_months':
+      return 'Last 3 months';
     case 'month':
     default:
       return 'This month';
@@ -759,6 +762,18 @@ export function resolveChatPeriod(
   fallback: OverviewPeriod,
 ): OverviewPeriod {
   const q = message.toLowerCase();
+  // Check 3-month phrases before single "last month".
+  if (
+    /\blast\s*3\s*months?\b/.test(q) ||
+    /\bpast\s*3\s*months?\b/.test(q) ||
+    /\bprevious\s*3\s*months?\b/.test(q) ||
+    /\b3\s*months?\b/.test(q) ||
+    /\bthree\s*months?\b/.test(q) ||
+    /၃\s*လ/.test(message) ||
+    /၃လ/.test(message)
+  ) {
+    return 'last_3_months';
+  }
   if (
     /\blast\s*month\b/.test(q) ||
     /\bprevious\s*month\b/.test(q) ||
@@ -770,8 +785,9 @@ export function resolveChatPeriod(
     return 'last_month';
   }
   if (
-    /\bthis\s*month\b/.test(q) ||
-    /\bcurrent\s*month\b/.test(q) ||
+    /\bthis\s*months?\b/.test(q) ||
+    /\bcurrent\s*months?\b/.test(q) ||
+    /\bthis\s*month'?s\b/.test(q) ||
     /ဒီလ/.test(message) ||
     /ယခုလ/.test(message)
   ) {
@@ -783,7 +799,10 @@ export function resolveChatPeriod(
   if (/\btoday\b/.test(q) || /ဒီနေ့/.test(message)) {
     return 'day';
   }
-  return fallback === 'last_month' ? 'month' : fallback;
+  if (fallback === 'last_month' || fallback === 'last_3_months') {
+    return 'month';
+  }
+  return fallback;
 }
 
 async function answerOverviewChatWithGemini(

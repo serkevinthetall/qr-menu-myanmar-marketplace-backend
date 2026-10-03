@@ -8316,7 +8316,12 @@ export async function fetchOdooOnlineOrderDetailBundle(
 
 /* ─── Overview / Insights dashboard ─── */
 
-export type OverviewPeriod = 'day' | 'week' | 'month' | 'last_month';
+export type OverviewPeriod =
+  | 'day'
+  | 'week'
+  | 'month'
+  | 'last_month'
+  | 'last_3_months';
 
 type OverviewPartnerRow = {
   id: number;
@@ -8419,24 +8424,32 @@ function buildPeriodWindow(period: OverviewPeriod, now = new Date()) {
     return { from, to, prevFrom, prevTo, buckets, bucketMode: 'day' as const };
   }
 
-  // Calendar months in Yangon (this month or last month).
+  // Calendar months in Yangon.
   const monthStartUtc = Date.UTC(y, m - 1, 1) - 6.5 * 60 * 60 * 1000;
   const nextMonthStartUtc = Date.UTC(y, m, 1) - 6.5 * 60 * 60 * 1000;
   const prevMonthStartUtc = Date.UTC(y, m - 2, 1) - 6.5 * 60 * 60 * 1000;
   const prevPrevMonthStartUtc = Date.UTC(y, m - 3, 1) - 6.5 * 60 * 60 * 1000;
+  // Start of the month that is 2 months before current (for last 3 months window).
+  const threeMonthStartUtc = Date.UTC(y, m - 3, 1) - 6.5 * 60 * 60 * 1000;
+  const priorThreeMonthStartUtc = Date.UTC(y, m - 6, 1) - 6.5 * 60 * 60 * 1000;
 
-  const from =
-    period === 'last_month'
-      ? new Date(prevMonthStartUtc)
-      : new Date(monthStartUtc);
-  const to =
-    period === 'last_month'
-      ? new Date(monthStartUtc)
-      : new Date(nextMonthStartUtc);
-  const prevFrom =
-    period === 'last_month'
-      ? new Date(prevPrevMonthStartUtc)
-      : new Date(prevMonthStartUtc);
+  let from: Date;
+  let to: Date;
+  let prevFrom: Date;
+  if (period === 'last_month') {
+    from = new Date(prevMonthStartUtc);
+    to = new Date(monthStartUtc);
+    prevFrom = new Date(prevPrevMonthStartUtc);
+  } else if (period === 'last_3_months') {
+    // Current month + previous 2 calendar months (e.g. Aug–Oct when today is in Oct).
+    from = new Date(threeMonthStartUtc);
+    to = new Date(nextMonthStartUtc);
+    prevFrom = new Date(priorThreeMonthStartUtc);
+  } else {
+    from = new Date(monthStartUtc);
+    to = new Date(nextMonthStartUtc);
+    prevFrom = new Date(prevMonthStartUtc);
+  }
   const prevTo = from;
   const buckets: string[] = [];
   const cursor = new Date(from.getTime());
@@ -8664,6 +8677,7 @@ export async function fetchOverviewInsights(
 
   const purchaseDomain = paidPurchaseDomain(fromStr, toStr);
   const prevPurchaseDomain = paidPurchaseDomain(prevFromStr, prevToStr);
+  const orderLimit = period === 'last_3_months' ? 3000 : 1000;
 
   const [
     saleOrders,
@@ -8680,28 +8694,28 @@ export async function fetchOverviewInsights(
       'sale.order',
       saleDomain,
       SALE_ORDER_LIST_FIELDS,
-      { order: 'date_order desc, id desc', limit: 1000 },
+      { order: 'date_order desc, id desc', limit: orderLimit },
     ),
     searchReadOdooRecords<OdooSaleOrder>(
       readSession,
       'sale.order',
       prevSaleDomain,
       ['id', 'amount_total', 'partner_id'],
-      { limit: 1000 },
+      { limit: orderLimit },
     ),
     searchReadOdooRecords<OdooPurchaseOrder>(
       readSession,
       'purchase.order',
       purchaseDomain,
       PURCHASE_ORDER_LIST_FIELDS,
-      { order: 'date_order desc, id desc', limit: 1000 },
+      { order: 'date_order desc, id desc', limit: orderLimit },
     ),
     searchReadOdooRecords<OdooPurchaseOrder>(
       readSession,
       'purchase.order',
       prevPurchaseDomain,
       ['id', 'amount_total'],
-      { limit: 1000 },
+      { limit: orderLimit },
     ),
     odooSearchCount(readSession, 'sale.order', [
       ['date_order', '>=', fromStr],
