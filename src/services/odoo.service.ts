@@ -10266,3 +10266,298 @@ export function vendorBillPaymentStateLabel(paymentState: string): string {
 export function vendorBillStateLabel(state: string): string {
   return invoiceStateLabel(state);
 }
+
+/* ─── Vendor Payments (account.payment, partner_type=supplier) ─── */
+
+export type OdooVendorPayment = {
+  id: number;
+  date: string | false;
+  name: string | false;
+  journal_id: [number, string] | false;
+  partner_id: [number, string] | false;
+  amount: number | false;
+  currency_id: [number, string] | false;
+  state: string | false;
+  payment_type: string | false;
+  payment_method_line_id: [number, string] | false;
+};
+
+const VENDOR_PAYMENT_FIELDS = [
+  'id',
+  'date',
+  'name',
+  'journal_id',
+  'partner_id',
+  'amount',
+  'currency_id',
+  'state',
+  'payment_type',
+  'payment_method_line_id',
+];
+
+export function vendorPaymentStateLabel(state: string): string {
+  switch (state) {
+    case 'draft':
+      return 'Draft';
+    case 'in_process':
+      return 'In Process';
+    case 'paid':
+      return 'Reconciled';
+    case 'canceled':
+    case 'cancel':
+      return 'Cancelled';
+    case 'rejected':
+      return 'Rejected';
+    default:
+      return state || '—';
+  }
+}
+
+export async function fetchOdooVendorPayments(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+    /** draft | in_process | paid | cancel */
+    status?: string;
+  },
+): Promise<OdooVendorPayment[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [['partner_type', '=', 'supplier']];
+
+  const status = options?.status?.trim();
+  if (status === 'draft') {
+    domain.push(['state', '=', 'draft']);
+  } else if (status === 'in_process') {
+    domain.push(['state', '=', 'in_process']);
+  } else if (status === 'paid') {
+    domain.push(['state', '=', 'paid']);
+  } else if (status === 'cancel') {
+    domain.push(['state', 'in', ['canceled', 'cancel', 'rejected']]);
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push(
+      '|',
+      '|',
+      '|',
+      ['name', 'ilike', q],
+      ['partner_id', 'ilike', q],
+      ['journal_id', 'ilike', q],
+      ['payment_method_line_id', 'ilike', q],
+    );
+  }
+
+  return searchReadOdooRecords<OdooVendorPayment>(
+    session,
+    'account.payment',
+    domain,
+    VENDOR_PAYMENT_FIELDS,
+    { order: 'date desc, id desc', limit, offset },
+  );
+}
+
+/* ─── Journal Entries (account.move — all move types) ─── */
+
+export type OdooJournalEntry = {
+  id: number;
+  date: string | false;
+  name: string | false;
+  partner_id: [number, string] | false;
+  ref: string | false;
+  journal_id: [number, string] | false;
+  amount_total: number | false;
+  currency_id: [number, string] | false;
+  state: string | false;
+  move_type: string | false;
+};
+
+const JOURNAL_ENTRY_FIELDS = [
+  'id',
+  'date',
+  'name',
+  'partner_id',
+  'ref',
+  'journal_id',
+  'amount_total',
+  'currency_id',
+  'state',
+  'move_type',
+];
+
+export function journalEntryStateLabel(state: string): string {
+  switch (state) {
+    case 'draft':
+      return 'Draft';
+    case 'posted':
+      return 'Posted';
+    case 'cancel':
+      return 'Cancelled';
+    default:
+      return state || '—';
+  }
+}
+
+export async function fetchOdooJournalEntries(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+    /** draft | posted | cancel */
+    status?: string;
+  },
+): Promise<OdooJournalEntry[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [];
+
+  const status = options?.status?.trim();
+  if (status === 'draft') {
+    domain.push(['state', '=', 'draft']);
+  } else if (status === 'posted') {
+    domain.push(['state', '=', 'posted']);
+  } else if (status === 'cancel') {
+    domain.push(['state', '=', 'cancel']);
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push(
+      '|',
+      '|',
+      '|',
+      '|',
+      ['name', 'ilike', q],
+      ['partner_id', 'ilike', q],
+      ['ref', 'ilike', q],
+      ['journal_id', 'ilike', q],
+      ['move_type', 'ilike', q],
+    );
+  }
+
+  return searchReadOdooRecords<OdooJournalEntry>(
+    session,
+    'account.move',
+    domain,
+    JOURNAL_ENTRY_FIELDS,
+    { order: 'date desc, id desc', limit, offset },
+  );
+}
+
+/* ─── Journal Items to Reconcile (account.move.line with residual) ─── */
+
+export type OdooReconcileItem = {
+  id: number;
+  date: string | false;
+  name: string | false;
+  journal_id: [number, string] | false;
+  move_id: [number, string] | false;
+  account_id: [number, string] | false;
+  partner_id: [number, string] | false;
+  ref: string | false;
+  product_id: [number, string] | false;
+  debit: number | false;
+  credit: number | false;
+  amount_residual: number | false;
+  date_maturity: string | false;
+  currency_id: [number, string] | false;
+  parent_state: string | false;
+};
+
+const RECONCILE_ITEM_FIELDS = [
+  'id',
+  'date',
+  'name',
+  'journal_id',
+  'move_id',
+  'account_id',
+  'partner_id',
+  'ref',
+  'product_id',
+  'debit',
+  'credit',
+  'amount_residual',
+  'date_maturity',
+  'currency_id',
+  'parent_state',
+];
+
+export async function fetchOdooReconcileItems(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+  },
+): Promise<OdooReconcileItem[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [
+    ['parent_state', '=', 'posted'],
+    ['amount_residual', '!=', 0],
+    ['account_id.reconcile', '=', true],
+  ];
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push(
+      '|',
+      '|',
+      '|',
+      '|',
+      ['name', 'ilike', q],
+      ['partner_id', 'ilike', q],
+      ['account_id', 'ilike', q],
+      ['move_id', 'ilike', q],
+      ['ref', 'ilike', q],
+    );
+  }
+
+  return searchReadOdooRecords<OdooReconcileItem>(
+    session,
+    'account.move.line',
+    domain,
+    RECONCILE_ITEM_FIELDS,
+    { order: 'account_id asc, partner_id asc, date desc, id desc', limit, offset },
+  );
+}
