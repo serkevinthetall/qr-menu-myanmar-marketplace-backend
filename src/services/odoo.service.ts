@@ -10666,3 +10666,309 @@ export async function fetchOdooChartAccounts(
     { order: 'code asc, id asc', limit, offset },
   );
 }
+
+/* ─── Customer Invoices (account.move, move_type=out_invoice) ─── */
+
+export type OdooCustomerInvoice = {
+  id: number;
+  name: string | false;
+  partner_id: [number, string] | false;
+  invoice_date: string | false;
+  invoice_date_due: string | false;
+  ref: string | false;
+  invoice_origin: string | false;
+  amount_untaxed: number | false;
+  amount_total: number | false;
+  amount_residual: number | false;
+  currency_id: [number, string] | false;
+  state: string | false;
+  payment_state: string | false;
+};
+
+export type OdooCustomerInvoiceMonthGroup = {
+  key: string;
+  label: string;
+  from: string;
+  to: string;
+  count: number;
+  amountUntaxed: number;
+  amountTotal: number;
+  amountDue: number;
+  currency: string;
+};
+
+const CUSTOMER_INVOICE_FIELDS = [
+  'id',
+  'name',
+  'partner_id',
+  'invoice_date',
+  'invoice_date_due',
+  'ref',
+  'invoice_origin',
+  'amount_untaxed',
+  'amount_total',
+  'amount_residual',
+  'currency_id',
+  'state',
+  'payment_state',
+];
+
+type OdooReadGroupMonthRow = {
+  invoice_date?: string | false;
+  invoice_date_count?: number;
+  __count?: number;
+  amount_untaxed?: number | false;
+  amount_total?: number | false;
+  amount_residual?: number | false;
+  __domain?: unknown[];
+  __range?: {
+    invoice_date?: { from?: string; to?: string };
+  };
+};
+
+async function readGroupOdooRecords<T>(
+  session: { cookie: string; uid: number },
+  model: string,
+  domain: unknown[],
+  fields: string[],
+  groupby: string[],
+  kwargs: Record<string, unknown> = {},
+): Promise<T[]> {
+  const args = [domain, fields, groupby];
+  if (env.odooApiKey) {
+    try {
+      const rows = await odooExecuteKw<T[]>(
+        session.uid,
+        model,
+        'read_group',
+        args,
+        kwargs,
+      );
+      if (Array.isArray(rows)) {
+        return rows;
+      }
+    } catch {
+      // Fall back to session cookie path.
+    }
+  }
+  return odooCallKw<T[]>(
+    session.cookie,
+    model,
+    'read_group',
+    args,
+    kwargs,
+  );
+}
+
+function customerInvoiceStatusDomain(status?: string): unknown[] {
+  const value = status?.trim();
+  if (value === 'draft') return [['state', '=', 'draft']];
+  if (value === 'cancel') return [['state', '=', 'cancel']];
+  if (value === 'paid') return [['payment_state', '=', 'paid']];
+  if (value === 'not_paid') {
+    return [['payment_state', 'in', ['not_paid', 'partial', 'in_payment']]];
+  }
+  return [];
+}
+
+function parseMonthKeyFromDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})/.exec(value.trim());
+  if (!match) return '';
+  return `${match[1]}-${match[2]}`;
+}
+
+function monthLabelFromKey(key: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(key);
+  if (!match) return key || 'Unknown';
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+  return date.toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+function monthBoundsFromKey(key: string): { from: string; to: string } | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(key);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || month < 1 || month > 12) return null;
+  const from = `${match[1]}-${match[2]}-01`;
+  const end = new Date(Date.UTC(year, month, 0));
+  const to = `${end.getUTCFullYear()}-${String(end.getUTCMonth() + 1).padStart(2, '0')}-${String(end.getUTCDate()).padStart(2, '0')}`;
+  return { from, to };
+}
+
+function extractMonthMeta(row: OdooReadGroupMonthRow): {
+  key: string;
+  label: string;
+  from: string;
+  to: string;
+} | null {
+  const rangeFrom = row.__range?.invoice_date?.from?.trim() || '';
+  const rangeTo = row.__range?.invoice_date?.to?.trim() || '';
+  let from = rangeFrom;
+  let to = rangeTo;
+
+  if ((!from || !to) && Array.isArray(row.__domain)) {
+    for (const clause of row.__domain) {
+      if (!Array.isArray(clause) || clause.length < 3) continue;
+      const field = String(clause[0]);
+      const op = String(clause[1]);
+      const value = String(clause[2] ?? '');
+      if (field !== 'invoice_date') continue;
+      if ((op === '>=' || op === '>') && value) from = value.slice(0, 10);
+      if ((op === '<=' || op === '<') && value) {
+        if (op === '<') {
+          const d = new Date(`${value.slice(0, 10)}T00:00:00Z`);
+          d.setUTCDate(d.getUTCDate() - 1);
+          to = d.toISOString().slice(0, 10);
+        } else {
+          to = value.slice(0, 10);
+        }
+      }
+    }
+  }
+
+  const key = parseMonthKeyFromDate(from);
+  if (!key) return null;
+  const bounds = monthBoundsFromKey(key);
+  if (!bounds) return null;
+  const label =
+    (typeof row.invoice_date === 'string' && row.invoice_date.trim()) ||
+    monthLabelFromKey(key);
+  return {
+    key,
+    label,
+    from: from || bounds.from,
+    to: to || bounds.to,
+  };
+}
+
+export function customerInvoicePaymentStateLabel(paymentState: string): string {
+  return invoicePaymentStateLabel(paymentState);
+}
+
+export function customerInvoiceStateLabel(state: string): string {
+  return invoiceStateLabel(state);
+}
+
+export async function fetchOdooCustomerInvoiceMonthGroups(
+  userId: string,
+  options?: {
+    q?: string;
+    status?: string;
+  },
+): Promise<OdooCustomerInvoiceMonthGroup[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const domain: unknown[] = [['move_type', '=', 'out_invoice']];
+  domain.push(...customerInvoiceStatusDomain(options?.status));
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push(
+      '|',
+      '|',
+      '|',
+      ['name', 'ilike', q],
+      ['partner_id', 'ilike', q],
+      ['ref', 'ilike', q],
+      ['invoice_origin', 'ilike', q],
+    );
+  }
+
+  const rows = await readGroupOdooRecords<OdooReadGroupMonthRow>(
+    session,
+    'account.move',
+    domain,
+    ['amount_untaxed', 'amount_total', 'amount_residual'],
+    ['invoice_date:month'],
+    { lazy: false },
+  );
+
+  const groups: OdooCustomerInvoiceMonthGroup[] = [];
+  for (const row of rows) {
+    const meta = extractMonthMeta(row);
+    if (!meta) continue;
+    const count = Number(row.invoice_date_count ?? row.__count) || 0;
+    if (count <= 0) continue;
+    groups.push({
+      key: meta.key,
+      label: meta.label,
+      from: meta.from,
+      to: meta.to,
+      count,
+      amountUntaxed: Number(row.amount_untaxed) || 0,
+      amountTotal: Number(row.amount_total) || 0,
+      amountDue: Number(row.amount_residual) || 0,
+      currency: 'MMK',
+    });
+  }
+
+  groups.sort((a, b) => b.key.localeCompare(a.key));
+  return groups;
+}
+
+export async function fetchOdooCustomerInvoices(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+    status?: string;
+    /** YYYY-MM */
+    month?: string;
+  },
+): Promise<OdooCustomerInvoice[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [['move_type', '=', 'out_invoice']];
+  domain.push(...customerInvoiceStatusDomain(options?.status));
+
+  const month = options?.month?.trim();
+  if (month) {
+    const bounds = monthBoundsFromKey(month);
+    if (bounds) {
+      domain.push(['invoice_date', '>=', bounds.from]);
+      domain.push(['invoice_date', '<=', bounds.to]);
+    }
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push(
+      '|',
+      '|',
+      '|',
+      ['name', 'ilike', q],
+      ['partner_id', 'ilike', q],
+      ['ref', 'ilike', q],
+      ['invoice_origin', 'ilike', q],
+    );
+  }
+
+  return searchReadOdooRecords<OdooCustomerInvoice>(
+    session,
+    'account.move',
+    domain,
+    CUSTOMER_INVOICE_FIELDS,
+    { order: 'invoice_date desc, id desc', limit, offset },
+  );
+}
