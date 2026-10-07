@@ -10472,6 +10472,149 @@ export async function fetchOdooJournalEntries(
   );
 }
 
+export type OdooJournalEntryLine = {
+  id: number;
+  account_id: [number, string] | false;
+  name: string | false;
+  debit: number | false;
+  credit: number | false;
+  tax_tag_ids?: number[] | [number, string][] | false;
+  display_type?: string | false;
+};
+
+export type OdooJournalEntryDetail = OdooJournalEntry & {
+  amount_untaxed: number | false;
+  amount_residual: number | false;
+  payment_state: string | false;
+  invoice_date: string | false;
+  invoice_date_due: string | false;
+  invoice_origin: string | false;
+  line_ids?: number[];
+};
+
+export type JournalEntryDetailBundle = {
+  entry: OdooJournalEntryDetail;
+  lines: OdooJournalEntryLine[];
+  taxTagLabels: Record<number, string>;
+};
+
+const JOURNAL_ENTRY_DETAIL_FIELDS = [
+  'id',
+  'date',
+  'name',
+  'partner_id',
+  'ref',
+  'journal_id',
+  'amount_total',
+  'amount_untaxed',
+  'amount_residual',
+  'currency_id',
+  'state',
+  'payment_state',
+  'move_type',
+  'invoice_date',
+  'invoice_date_due',
+  'invoice_origin',
+  'line_ids',
+];
+
+const JOURNAL_ENTRY_LINE_FIELDS = [
+  'id',
+  'account_id',
+  'name',
+  'debit',
+  'credit',
+  'tax_tag_ids',
+  'display_type',
+];
+
+export function journalEntryPaymentStateLabel(paymentState: string): string {
+  return invoicePaymentStateLabel(paymentState);
+}
+
+export async function fetchOdooJournalEntryDetail(
+  userId: string,
+  entryId: number,
+): Promise<JournalEntryDetailBundle | null> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+  if (!Number.isFinite(entryId) || entryId <= 0) {
+    return null;
+  }
+
+  const entry = await readOdooRecordAsUser<OdooJournalEntryDetail>(
+    session,
+    'account.move',
+    entryId,
+    JOURNAL_ENTRY_DETAIL_FIELDS,
+  );
+  if (!entry) {
+    return null;
+  }
+
+  let lines: OdooJournalEntryLine[] = [];
+  try {
+    lines = await searchReadOdooRecords<OdooJournalEntryLine>(
+      session,
+      'account.move.line',
+      [
+        ['move_id', '=', entryId],
+        ['display_type', 'not in', ['line_section', 'line_note']],
+      ],
+      JOURNAL_ENTRY_LINE_FIELDS,
+      { order: 'id asc', limit: 500 },
+    );
+  } catch {
+    lines = await searchReadOdooRecords<OdooJournalEntryLine>(
+      session,
+      'account.move.line',
+      [['move_id', '=', entryId]],
+      ['id', 'account_id', 'name', 'debit', 'credit', 'display_type'],
+      { order: 'id asc', limit: 500 },
+    );
+  }
+
+  const tagIds = new Set<number>();
+  for (const line of lines) {
+    const tags = line.tax_tag_ids;
+    if (!Array.isArray(tags)) continue;
+    for (const tag of tags) {
+      if (typeof tag === 'number' && Number.isFinite(tag)) {
+        tagIds.add(tag);
+      } else if (Array.isArray(tag) && typeof tag[0] === 'number') {
+        tagIds.add(tag[0]);
+      }
+    }
+  }
+
+  const taxTagLabels: Record<number, string> = {};
+  if (tagIds.size > 0) {
+    try {
+      const tags = await searchReadOdooRecords<{
+        id: number;
+        name: string | false;
+        display_name?: string | false;
+      }>(
+        session,
+        'account.account.tag',
+        [['id', 'in', [...tagIds]]],
+        ['id', 'name', 'display_name'],
+        { limit: tagIds.size },
+      );
+      for (const tag of tags) {
+        taxTagLabels[tag.id] =
+          odooString(tag.display_name) || odooString(tag.name) || String(tag.id);
+      }
+    } catch {
+      // Tax tag model/fields vary by Odoo version — leave labels empty.
+    }
+  }
+
+  return { entry, lines, taxTagLabels };
+}
+
 /* ─── Journal Items to Reconcile (account.move.line with residual) ─── */
 
 export type OdooReconcileItem = {
