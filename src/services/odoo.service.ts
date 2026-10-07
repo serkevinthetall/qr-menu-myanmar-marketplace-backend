@@ -10167,3 +10167,102 @@ export async function fetchOdooMonthlyRebateReviews(
     { order: 'x_studio_month desc, id desc', limit, offset },
   );
 }
+
+/* ─── Vendor Bills (account.move, move_type=in_invoice) ─── */
+
+export type OdooVendorBill = {
+  id: number;
+  name: string | false;
+  partner_id: [number, string] | false;
+  invoice_date: string | false;
+  invoice_date_due: string | false;
+  ref: string | false;
+  amount_untaxed: number | false;
+  amount_total: number | false;
+  amount_residual: number | false;
+  currency_id: [number, string] | false;
+  state: string | false;
+  payment_state: string | false;
+};
+
+const VENDOR_BILL_FIELDS = [
+  'id',
+  'name',
+  'partner_id',
+  'invoice_date',
+  'invoice_date_due',
+  'ref',
+  'amount_untaxed',
+  'amount_total',
+  'amount_residual',
+  'currency_id',
+  'state',
+  'payment_state',
+];
+
+export async function fetchOdooVendorBills(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+    /** draft | paid | not_paid | cancel — maps to state / payment_state */
+    status?: string;
+  },
+): Promise<OdooVendorBill[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [['move_type', '=', 'in_invoice']];
+
+  const status = options?.status?.trim();
+  if (status === 'draft') {
+    domain.push(['state', '=', 'draft']);
+  } else if (status === 'cancel') {
+    domain.push(['state', '=', 'cancel']);
+  } else if (status === 'paid') {
+    domain.push(['payment_state', '=', 'paid']);
+  } else if (status === 'not_paid') {
+    domain.push(['payment_state', 'in', ['not_paid', 'partial', 'in_payment']]);
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push(
+      '|',
+      '|',
+      '|',
+      ['name', 'ilike', q],
+      ['partner_id', 'ilike', q],
+      ['ref', 'ilike', q],
+      ['payment_state', 'ilike', q],
+    );
+  }
+
+  return searchReadOdooRecords<OdooVendorBill>(
+    session,
+    'account.move',
+    domain,
+    VENDOR_BILL_FIELDS,
+    { order: 'invoice_date desc, id desc', limit, offset },
+  );
+}
+
+export function vendorBillPaymentStateLabel(paymentState: string): string {
+  return invoicePaymentStateLabel(paymentState);
+}
+
+export function vendorBillStateLabel(state: string): string {
+  return invoiceStateLabel(state);
+}
