@@ -23,6 +23,7 @@ import { Router } from 'express';
  *   /api/vendor-payments/*
  *   /api/journal-entries/*
  *   /api/reconcile/*
+ *   /api/chart-of-accounts/*
  *   /api/telegram/*   (webhook, Vercel cron, daily report)
  *   /api/odoo/*       (Odoo → ERP webhooks, no JWT)
  *
@@ -57,6 +58,7 @@ import purchaseOrdersRoutes from './purchase-orders.routes.js';
 import quotationsRoutes from './quotations.routes.js';
 import saleOrdersRoutes from './sale-orders.routes.js';
 import telegramRoutes from './telegram.routes.js';
+import chartOfAccountsRoutes from './chart-of-accounts.routes.js';
 import journalEntriesRoutes from './journal-entries.routes.js';
 import reconcileRoutes from './reconcile.routes.js';
 import vendorBillsRoutes from './vendor-bills.routes.js';
@@ -93,6 +95,7 @@ router.use('/vendor-bills', vendorBillsRoutes);
 router.use('/vendor-payments', vendorPaymentsRoutes);
 router.use('/journal-entries', journalEntriesRoutes);
 router.use('/reconcile', reconcileRoutes);
+router.use('/chart-of-accounts', chartOfAccountsRoutes);
 router.use('/insights', insightsRoutes);
 router.use('/telegram', telegramRoutes);
 router.use('/odoo', odooWebhookRoutes);

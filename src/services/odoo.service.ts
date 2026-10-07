@@ -10561,3 +10561,108 @@ export async function fetchOdooReconcileItems(
     { order: 'account_id asc, partner_id asc, date desc, id desc', limit, offset },
   );
 }
+
+/* ─── Chart of Accounts (account.account) ─── */
+
+export type OdooChartAccount = {
+  id: number;
+  code: string | false;
+  name: string | false;
+  account_type: string | false;
+  reconcile: boolean;
+};
+
+const CHART_ACCOUNT_FIELDS = ['id', 'code', 'name', 'account_type', 'reconcile'];
+
+export function chartAccountTypeLabel(accountType: string): string {
+  switch (accountType) {
+    case 'asset_receivable':
+      return 'Receivable';
+    case 'asset_cash':
+      return 'Bank and Cash';
+    case 'asset_current':
+      return 'Current Assets';
+    case 'asset_non_current':
+      return 'Non-current Assets';
+    case 'asset_prepayments':
+      return 'Prepayments';
+    case 'asset_fixed':
+      return 'Fixed Assets';
+    case 'liability_payable':
+      return 'Payable';
+    case 'liability_credit_card':
+      return 'Credit Card';
+    case 'liability_current':
+      return 'Current Liabilities';
+    case 'liability_non_current':
+      return 'Non-current Liabilities';
+    case 'equity':
+      return 'Equity';
+    case 'equity_unaffected':
+      return 'Current Year Earnings';
+    case 'income':
+      return 'Income';
+    case 'income_other':
+      return 'Other Income';
+    case 'expense':
+      return 'Expenses';
+    case 'expense_depreciation':
+      return 'Depreciation';
+    case 'expense_direct_cost':
+      return 'Cost of Revenue';
+    case 'off_balance':
+      return 'Off-Balance Sheet';
+    default:
+      return accountType || '—';
+  }
+}
+
+export async function fetchOdooChartAccounts(
+  userId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    q?: string;
+    /** account_type key, or 'reconcilable' for reconcile=true */
+    filter?: string;
+  },
+): Promise<OdooChartAccount[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [];
+  const filter = options?.filter?.trim();
+  if (filter === 'reconcilable') {
+    domain.push(['reconcile', '=', true]);
+  } else if (filter) {
+    domain.push(['account_type', '=', filter]);
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push('|', '|', ['code', 'ilike', q], ['name', 'ilike', q], [
+      'account_type',
+      'ilike',
+      q,
+    ]);
+  }
+
+  return searchReadOdooRecords<OdooChartAccount>(
+    session,
+    'account.account',
+    domain,
+    CHART_ACCOUNT_FIELDS,
+    { order: 'code asc, id asc', limit, offset },
+  );
+}
