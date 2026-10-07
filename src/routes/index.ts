@@ -18,6 +18,7 @@ import { Router } from 'express';
  *   /api/sale-orders/*
  *   /api/online-orders/*
  *   /api/insights/*
+ *   /api/monthly-rebate-reviews/*
  *   /api/telegram/*   (webhook, Vercel cron, daily report)
  *   /api/odoo/*       (Odoo → ERP webhooks, no JWT)
  *
@@ -45,6 +46,7 @@ import inventoryRoutes from './inventory.routes.js';
 import membershipCouponsRoutes from './membership-coupons.routes.js';
 import membershipsRoutes from './memberships.routes.js';
 import memberRequestsRoutes from './member-requests.routes.js';
+import monthlyRebateReviewsRoutes from './monthly-rebate-reviews.routes.js';
 import onlineOrdersRoutes from './online-orders.routes.js';
 import productsRoutes from './products.routes.js';
 import purchaseOrdersRoutes from './purchase-orders.routes.js';
@@ -78,6 +80,7 @@ router.use('/purchase-orders', purchaseOrdersRoutes);
 router.use('/bills-of-materials', billsOfMaterialsRoutes);
 router.use('/sale-orders', saleOrdersRoutes);
 router.use('/online-orders', onlineOrdersRoutes);
+router.use('/monthly-rebate-reviews', monthlyRebateReviewsRoutes);
 router.use('/insights', insightsRoutes);
 router.use('/telegram', telegramRoutes);
 router.use('/odoo', odooWebhookRoutes);

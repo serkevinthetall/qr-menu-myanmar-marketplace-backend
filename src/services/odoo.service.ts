@@ -10090,3 +10090,80 @@ export async function createOdooBom(
     throw error;
   }
 }
+
+
+/* ─── Monthly Rebate Review (x_monthly_rebate_revie) ─── */
+
+export const MONTHLY_REBATE_REVIEW_MODEL = 'x_monthly_rebate_revie';
+
+export type OdooMonthlyRebateReview = {
+  id: number;
+  x_name: string | false;
+  x_studio_related_field_1mt_1jq8u17jc: string | false;
+  x_studio_customer: [number, string] | false;
+  x_studio_month: string | false;
+  x_studio_rebate_rate: number | false;
+  x_studio_paid_sales: number | false;
+  x_studio_rebate_amount: number | false;
+  x_studio_status: string | false;
+  x_studio_related_field_733_1jq8u2g7o: string | false;
+};
+
+const MONTHLY_REBATE_REVIEW_FIELDS = [
+  'id',
+  'x_name',
+  'x_studio_related_field_1mt_1jq8u17jc',
+  'x_studio_customer',
+  'x_studio_month',
+  'x_studio_rebate_rate',
+  'x_studio_paid_sales',
+  'x_studio_rebate_amount',
+  'x_studio_status',
+  'x_studio_related_field_733_1jq8u2g7o',
+];
+
+export async function fetchOdooMonthlyRebateReviews(
+  userId: string,
+  options?: { limit?: number; offset?: number; q?: string; status?: string },
+): Promise<OdooMonthlyRebateReview[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [];
+  const status = options?.status?.trim();
+  if (status) {
+    domain.push(['x_studio_status', '=', status]);
+  }
+
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push(
+      '|',
+      '|',
+      '|',
+      ['x_name', 'ilike', q],
+      ['x_studio_customer', 'ilike', q],
+      ['x_studio_related_field_1mt_1jq8u17jc', 'ilike', q],
+      ['x_studio_status', 'ilike', q],
+    );
+  }
+
+  return searchReadOdooRecords<OdooMonthlyRebateReview>(
+    session,
+    MONTHLY_REBATE_REVIEW_MODEL,
+    domain,
+    MONTHLY_REBATE_REVIEW_FIELDS,
+    { order: 'x_studio_month desc, id desc', limit, offset },
+  );
+}
