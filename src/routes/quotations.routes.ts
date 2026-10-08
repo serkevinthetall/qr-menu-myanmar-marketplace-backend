@@ -13,6 +13,7 @@ import {
   fetchOdooQuotationDetailBundle,
   fetchOdooQuotations,
   payOdooSaleOrderInvoice,
+  removeOdooQuotationLine,
   validateOdooSaleOrderDelivery,
 } from '../services/odoo.service.js';
 import { AuthRequest } from '../types/auth.js';
@@ -289,6 +290,59 @@ router.get('/:id', async (req: AuthRequest, res) => {
       error instanceof Error ? error.message : 'Failed to load quotation.';
     console.error('[quotations] Failed to load quotation detail:', message);
     return res.status(500).json({ message });
+  }
+});
+
+router.delete('/:id/lines/:lineId', async (req: AuthRequest, res) => {
+  const quotationId = Number(req.params.id);
+  const lineId = Number(req.params.lineId);
+
+  if (!Number.isFinite(quotationId) || quotationId <= 0) {
+    return res.status(400).json({ message: 'Invalid quotation id.' });
+  }
+  if (!Number.isFinite(lineId) || lineId <= 0) {
+    return res.status(400).json({ message: 'Invalid order line id.' });
+  }
+
+  try {
+    await removeOdooQuotationLine(req.user!.id, quotationId, lineId);
+    const bundle = await fetchOdooQuotationDetailBundle(
+      req.user!.id,
+      quotationId,
+    );
+    if (!bundle) {
+      return res
+        .status(404)
+        .json({ message: 'Quotation not found after removing product.' });
+    }
+    const flags = await enrichSaleOrderActionFlags(
+      req.user!.id,
+      quotationId,
+      bundle.quotation,
+    );
+    return res.json({
+      data: {
+        ...mapQuotationDetail(bundle),
+        canValidateDelivery: flags.canValidateDelivery,
+        deliveryCount: flags.deliveryCount,
+        invoiceCount: flags.invoiceCount,
+        canCreateInvoice: flags.canCreateInvoice,
+        canPayInvoice: flags.canPayInvoice,
+        payableInvoice: flags.payableInvoice,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to remove product from quotation.';
+    const status = /only quotations in quotation/i.test(message)
+      ? 409
+      : /not found/i.test(message)
+        ? 404
+        : 500;
+    console.error('[quotations] Failed to remove quotation line:', message);
+    return res.status(status).json({ message });
   }
 });
 

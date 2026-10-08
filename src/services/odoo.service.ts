@@ -3004,6 +3004,74 @@ export async function fetchOdooQuotationDetailBundle(
  * Cancel a draft quotation in Odoo (`action_cancel`).
  * Only allowed when state is `draft` (UI label: Quotation).
  */
+/**
+ * Remove one order line from a draft/sent quotation (Odoo order_line unlink).
+ */
+export async function removeOdooQuotationLine(
+  userId: string,
+  quotationId: number,
+  lineId: number,
+): Promise<OdooQuotationDetail> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const existing = await fetchOdooQuotationById(userId, quotationId);
+  if (!existing) {
+    throw new Error('Quotation not found.');
+  }
+
+  const state = String(existing.state || '');
+  if (state !== 'draft' && state !== 'sent') {
+    throw new Error(
+      'Only quotations in Quotation or Quotation Sent status can remove products.',
+    );
+  }
+
+  if (!Number.isFinite(lineId) || lineId <= 0) {
+    throw new Error('Invalid order line.');
+  }
+
+  const line = await readOdooRecordAsUser<{
+    id: number;
+    order_id?: [number, string] | false;
+    display_type?: string | false;
+  }>(session, 'sale.order.line', lineId, ['id', 'order_id', 'display_type']);
+
+  if (!line) {
+    throw new Error('Order line not found.');
+  }
+
+  const orderId = Array.isArray(line.order_id) ? Number(line.order_id[0]) : 0;
+  if (orderId !== quotationId) {
+    throw new Error('Order line does not belong to this quotation.');
+  }
+
+  try {
+    await writeOdooRecordAsUser(session, 'sale.order', quotationId, {
+      order_line: [[2, lineId, 0]],
+    });
+  } catch (cookieError) {
+    try {
+      await odooExecuteKw(session.uid, 'sale.order', 'write', [
+        [quotationId],
+        { order_line: [[2, lineId, 0]] },
+      ]);
+    } catch {
+      throw cookieError instanceof Error
+        ? cookieError
+        : new Error('Failed to remove product from quotation.');
+    }
+  }
+
+  const updated = await fetchOdooQuotationById(userId, quotationId);
+  if (!updated) {
+    throw new Error('Product was removed but quotation could not be reloaded.');
+  }
+  return updated;
+}
+
 export async function cancelOdooQuotation(
   userId: string,
   quotationId: number,
@@ -10166,6 +10234,141 @@ export async function fetchOdooMonthlyRebateReviews(
     MONTHLY_REBATE_REVIEW_FIELDS,
     { order: 'x_studio_month desc, id desc', limit, offset },
   );
+}
+
+/* ─── Pickup Points (x_pickup_point) ─── */
+
+export const PICKUP_POINT_MODEL = 'x_pickup_point';
+
+export type OdooPickupPoint = {
+  id: number;
+  x_name: string | false;
+  x_studio_township: string | false;
+  x_studio_address: string | false;
+};
+
+const PICKUP_POINT_FIELDS = [
+  'id',
+  'x_name',
+  'x_studio_township',
+  'x_studio_address',
+];
+
+export type PickupPointInput = {
+  name: string;
+  township?: string;
+  address?: string;
+};
+
+export async function fetchOdooPickupPoints(
+  userId: string,
+  options?: { limit?: number; offset?: number; q?: string },
+): Promise<OdooPickupPoint[]> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const limit =
+    options?.limit !== undefined && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 500)
+      : 200;
+  const offset =
+    options?.offset !== undefined && Number.isFinite(options.offset) && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+
+  const domain: unknown[] = [];
+  const q = options?.q?.trim();
+  if (q) {
+    domain.push(
+      '|',
+      '|',
+      ['x_name', 'ilike', q],
+      ['x_studio_township', 'ilike', q],
+      ['x_studio_address', 'ilike', q],
+    );
+  }
+
+  return searchReadOdooRecords<OdooPickupPoint>(
+    session,
+    PICKUP_POINT_MODEL,
+    domain,
+    PICKUP_POINT_FIELDS,
+    { order: 'x_name asc, id asc', limit, offset },
+  );
+}
+
+export async function createOdooPickupPoint(
+  userId: string,
+  input: PickupPointInput,
+): Promise<OdooPickupPoint> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error('Pickup point name is required.');
+  }
+
+  const values: Record<string, unknown> = {
+    x_name: name,
+    x_studio_township: input.township?.trim() || '',
+    x_studio_address: input.address?.trim() || '',
+  };
+
+  const id = await createOdooRecordAsUser(session, PICKUP_POINT_MODEL, values);
+  const rows = await searchReadOdooRecords<OdooPickupPoint>(
+    session,
+    PICKUP_POINT_MODEL,
+    [['id', '=', id]],
+    PICKUP_POINT_FIELDS,
+    { limit: 1 },
+  );
+  if (!rows[0]) {
+    throw new Error('Pickup point was created but could not be reloaded.');
+  }
+  return rows[0];
+}
+
+export async function updateOdooPickupPoint(
+  userId: string,
+  pickupPointId: number,
+  input: PickupPointInput,
+): Promise<OdooPickupPoint> {
+  const session = getOdooSession(userId);
+  if (!session) {
+    throw new Error('Odoo session expired. Please log in again.');
+  }
+
+  if (!Number.isFinite(pickupPointId) || pickupPointId <= 0) {
+    throw new Error('Invalid pickup point id.');
+  }
+
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error('Pickup point name is required.');
+  }
+
+  await writeOdooRecordAsUser(session, PICKUP_POINT_MODEL, pickupPointId, {
+    x_name: name,
+    x_studio_township: input.township?.trim() || '',
+    x_studio_address: input.address?.trim() || '',
+  });
+
+  const rows = await searchReadOdooRecords<OdooPickupPoint>(
+    session,
+    PICKUP_POINT_MODEL,
+    [['id', '=', pickupPointId]],
+    PICKUP_POINT_FIELDS,
+    { limit: 1 },
+  );
+  if (!rows[0]) {
+    throw new Error('Pickup point was updated but could not be reloaded.');
+  }
+  return rows[0];
 }
 
 /* ─── Vendor Bills (account.move, move_type=in_invoice) ─── */
