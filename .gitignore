@@ -11,3 +11,8 @@ data/app-order-read/
 .vercel
 .env.local
 .env.vercel*
+
+# Local code knowledge graph (Cursor / graphify) — do not commit
+graphify-out/
+.graphify_labels.json
+.graphify_root
